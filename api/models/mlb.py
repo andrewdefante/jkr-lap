@@ -785,7 +785,7 @@ class MLBPitchQualityScore(Base):
     avg_velo = Column(Float, nullable=True)
     avg_spin = Column(Float, nullable=True)
     avg_hmov = Column(Float, nullable=True)
-    avg_vmov = Column(Float, nullable=True)
+    avg_ivb = Column(Float, nullable=True)
 
     # Outcome rates this game
     whiff_rate = Column(Float, nullable=True)

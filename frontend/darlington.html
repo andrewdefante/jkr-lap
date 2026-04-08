@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NASCAR — Track Profile</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9f9f8; color: #1a1a1a; font-size: 14px; }
+  .page { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+  h1 { font-size: 22px; font-weight: 500; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #666; margin-bottom: 24px; }
+  .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 24px; }
+  .metric { background: #f0efed; border-radius: 8px; padding: 12px 16px; }
+  .metric-val { font-size: 20px; font-weight: 500; }
+  .metric-lbl { font-size: 11px; color: #666; margin-top: 2px; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab { padding: 5px 14px; font-size: 13px; border: 0.5px solid #ccc; border-radius: 8px; cursor: pointer; background: transparent; color: #666; }
+  .tab.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .table-wrap { border-radius: 8px; overflow: hidden; border: 0.5px solid #e5e5e5; }
+  .row { display: grid; align-items: center; padding: 7px 12px; border-bottom: 0.5px solid #f0f0f0; font-size: 13px; }
+  .row:last-child { border-bottom: none; }
+  .row:hover { background: #fafafa; }
+  .row.header { font-size: 11px; color: #888; font-weight: 500; padding: 8px 12px; background: #f5f5f3; }
+  .bar-wrap { height: 6px; background: #ebebeb; border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 7px; border-radius: 6px; font-weight: 500; }
+  .bt { background: #E6F1FB; color: #0C447C; }
+  .bc { background: #FCEBEB; color: #A32D2D; }
+  .bf { background: #EAF3DE; color: #3B6D11; }
+  .mfr-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+  .mfr-card { background: #f5f5f3; border-radius: 10px; padding: 14px 16px; border-left: 3px solid #ccc; }
+  .mfr-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .mfr-stat-val { font-size: 20px; font-weight: 500; }
+  .mfr-stat-lbl { font-size: 11px; color: #666; }
+  .controls { display: flex; gap: 12px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+  .controls label { font-size: 12px; color: #666; }
+  .controls select { padding: 5px 10px; border: 0.5px solid #ccc; border-radius: 6px; font-size: 13px; background: #fff; }
+  .loading { padding: 40px; text-align: center; color: #888; }
+  .live-header { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #666; margin-bottom: 10px; }
+  .num { font-weight: 500; }
+  .muted { color: #666; }
+  @media (max-width: 700px) {
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .mfr-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1 id="page-title">Track Profile</h1>
+  <div class="subtitle" id="page-subtitle">Loading...</div>
+
+  <div class="controls">
+    <div>
+      <label>Track</label><br>
+      <select id="track-select" onchange="load()">
+        <option value="Darlington">Darlington Raceway</option>
+        <option value="Daytona">Daytona International Speedway</option>
+        <option value="Charlotte">Charlotte Motor Speedway</option>
+        <option value="Bristol">Bristol Motor Speedway</option>
+        <option value="Talladega">Talladega Superspeedway</option>
+      </select>
+    </div>
+    <div>
+      <label>Race filter</label><br>
+      <select id="race-select" onchange="load()">
+        <option value="">All races</option>
+        <option value="Goodyear">Spring only (Goodyear 400)</option>
+        <option value="Southern 500">Fall only (Southern 500)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="metrics" id="metrics"></div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('results')">Results + rating</button>
+    <button class="tab" onclick="showTab('passing')">Traffic + passing</button>
+    <button class="tab" onclick="showTab('mfr')">Manufacturer+</button>
+    <button class="tab" onclick="showTab('deg')">Tire degradation</button>
+    <button class="tab" onclick="showTab('live')">Live projections</button>
+  </div>
+
+  <div id="tab-results"><div class="loading">Loading...</div></div>
+  <div id="tab-passing" style="display:none"><div class="loading">Loading...</div></div>
+  <div id="tab-mfr" style="display:none"><div class="loading">Loading...</div></div>
+  <div id="tab-deg" style="display:none"><div class="loading">Loading...</div></div>
+  <div id="tab-live" style="display:none">
+    <div class="live-header">
+      <span id="live-info">Loading...</span>
+      <span id="live-updated"></span>
+    </div>
+    <div id="live-content"><div class="loading">Fetching live data...</div></div>
+  </div>
+
+</div>
+
+<script>
+const API = 'http://localhost:8000';
+const TABS = ['results', 'passing', 'mfr', 'deg', 'live'];
+const MFR_COLOR = { Toyota: '#378ADD', Chevrolet: '#E24B4A', Ford: '#639922' };
+const MFR_ABBR = { Tyt: 'Toyota', Chv: 'Chevrolet', Frd: 'Ford', Toyota: 'Toyota', Chevrolet: 'Chevrolet', Ford: 'Ford' };
+
+let histData = null;
+let liveInterval = null;
+let currentRace = null; // { race_id, race_name, track_name }
+
+function mfrBadge(m) {
+  const cls = m === 'Toyota' ? 'bt' : m === 'Chevrolet' ? 'bc' : m === 'Ford' ? 'bf' : '';
+  return '<span class="badge ' + cls + '">' + (m || '—') + '</span>';
+}
+
+function barHtml(pct, color) {
+  return '<div class="bar-wrap"><div class="bar-fill" style="width:' + pct.toFixed(1) + '%;background:' + color + '"></div></div>';
+}
+
+function showTab(name) {
+  TABS.forEach(function(t) {
+    document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+  });
+  document.querySelectorAll('.tab').forEach(function(btn, i) {
+    btn.classList.toggle('active', TABS[i] === name);
+  });
+  if (name === 'live') {
+    loadLive();
+    if (!liveInterval) liveInterval = setInterval(loadLive, 30000);
+  } else {
+    if (liveInterval) { clearInterval(liveInterval); liveInterval = null; }
+  }
+}
+
+async function load() {
+  var track = document.getElementById('track-select').value;
+  var race = document.getElementById('race-select').value;
+  var titleRace = currentRace ? currentRace.race_name : (race || track);
+  document.title = titleRace + ' — Track Profile';
+  document.getElementById('page-title').textContent = titleRace + ' — Track Profile';
+  document.getElementById('page-subtitle').textContent = 'Loading...';
+
+  var url = API + '/nascar/track-profile/' + encodeURIComponent(track);
+  if (race) url += '?race_name=' + encodeURIComponent(race);
+
+  try {
+    var res = await fetch(url);
+    histData = await res.json();
+  } catch(e) {
+    document.getElementById('page-subtitle').textContent = 'Error loading data — is the API running?';
+    return;
+  }
+
+  var drivers = histData.drivers;
+  var mfrs = histData.manufacturers;
+  var totalRaces = drivers.length > 0 ? Math.max.apply(null, drivers.map(function(d) { return d.races; })) : 0;
+  var topDriver = drivers.slice().sort(function(a,b) { return b.avg_rating - a.avg_rating; })[0];
+  var topMfr = mfrs[0];
+  var bestPass = drivers.filter(function(d) { return d.avg_pass_diff != null; }).sort(function(a,b) { return b.avg_pass_diff - a.avg_pass_diff; })[0];
+
+  document.getElementById('page-subtitle').textContent = drivers.length + ' drivers · ' + totalRaces + ' races in dataset · Cup Series';
+  document.getElementById('metrics').innerHTML =
+    '<div class="metric"><div class="metric-val">' + (topMfr ? topMfr.manufacturer : '—') + '</div><div class="metric-lbl">' + (topMfr ? topMfr.rating_plus : '—') + ' rating+ · top mfr</div></div>' +
+    '<div class="metric"><div class="metric-val">' + (topDriver ? topDriver.driver_name.split(' ').pop() : '—') + '</div><div class="metric-lbl">' + (topDriver ? topDriver.avg_rating.toFixed(1) : '—') + ' driver rating · best</div></div>' +
+    '<div class="metric"><div class="metric-val">' + (bestPass ? bestPass.driver_name.split(' ').pop() : '—') + '</div><div class="metric-lbl">' + (bestPass && bestPass.avg_pass_diff > 0 ? '+' : '') + (bestPass ? bestPass.avg_pass_diff.toFixed(1) : '—') + ' pass diff · best traffic</div></div>' +
+    '<div class="metric"><div class="metric-val">' + drivers.length + '</div><div class="metric-lbl">drivers in dataset</div></div>';
+
+  renderResults(drivers);
+  renderPassing(drivers);
+  renderMfr(mfrs, drivers);
+  renderDeg(drivers);
+}
+
+function renderResults(drivers) {
+  var maxRating = Math.max.apply(null, drivers.map(function(d) { return d.avg_rating || 0; }));
+  var sorted = drivers.slice().sort(function(a,b) { return a.avg_finish - b.avg_finish; });
+  var html = '<div class="table-wrap"><div class="row header" style="grid-template-columns:160px 60px 60px 65px 70px 1fr;"><div>Driver</div><div>Mfr</div><div>Avg fin</div><div>Avg start</div><div>Rating</div><div>Rating index</div></div>';
+  sorted.forEach(function(d) {
+    var pct = ((d.avg_rating || 0) / maxRating * 100);
+    var color = MFR_COLOR[d.manufacturer] || '#888';
+    html += '<div class="row" style="grid-template-columns:160px 60px 60px 65px 70px 1fr;">' +
+      '<div style="font-weight:500">' + d.driver_name + '</div>' +
+      '<div>' + mfrBadge(d.manufacturer) + '</div>' +
+      '<div class="num">' + (d.avg_finish != null ? d.avg_finish.toFixed(1) : '—') + '</div>' +
+      '<div class="muted">' + (d.avg_start != null ? d.avg_start.toFixed(1) : '—') + '</div>' +
+      '<div class="num">' + (d.avg_rating != null ? d.avg_rating.toFixed(1) : '—') + '</div>' +
+      barHtml(pct, color) + '</div>';
+  });
+  document.getElementById('tab-results').innerHTML = html + '</div>';
+}
+
+function renderPassing(drivers) {
+  var withPass = drivers.filter(function(d) { return d.avg_pass_diff != null; });
+  var sorted = withPass.slice().sort(function(a,b) { return b.avg_pass_diff - a.avg_pass_diff; });
+  var html = '<div style="font-size:12px;color:#666;margin-bottom:10px;">Green flag passes made vs given up. Pass diff = net positions gained through passing.</div>' +
+    '<div class="table-wrap"><div class="row header" style="grid-template-columns:160px 55px 55px 60px 60px 65px 60px 1fr;"><div>Driver</div><div>Mfr</div><div>Avg start</div><div>GF passes</div><div>GF passed</div><div>Pass diff</div><div>Qual passes</div><div>Efficiency</div></div>';
+  sorted.forEach(function(d) {
+    var color = MFR_COLOR[d.manufacturer] || '#888';
+    var effPct = Math.max(0, Math.min(100, (d.avg_pass_diff + 20) / 50 * 100));
+    var diffColor = d.avg_pass_diff > 5 ? '#3B6D11' : d.avg_pass_diff > -5 ? '#BA7517' : '#A32D2D';
+    var startColor = d.avg_start <= 5 ? '#A32D2D' : d.avg_start <= 12 ? '#BA7517' : '#3B6D11';
+    html += '<div class="row" style="grid-template-columns:160px 55px 55px 60px 60px 65px 60px 1fr;">' +
+      '<div style="font-weight:500">' + d.driver_name + '</div>' +
+      '<div>' + mfrBadge(d.manufacturer) + '</div>' +
+      '<div style="font-weight:500;color:' + startColor + '">' + (d.avg_start != null ? d.avg_start.toFixed(1) : '—') + '</div>' +
+      '<div class="num">' + (d.avg_gf_passes != null ? d.avg_gf_passes.toFixed(1) : '—') + '</div>' +
+      '<div class="muted">' + (d.avg_gf_passed != null ? d.avg_gf_passed.toFixed(1) : '—') + '</div>' +
+      '<div style="font-weight:500;color:' + diffColor + '">' + (d.avg_pass_diff > 0 ? '+' : '') + d.avg_pass_diff.toFixed(1) + '</div>' +
+      '<div class="muted">' + (d.avg_quality_passes != null ? d.avg_quality_passes.toFixed(1) : '—') + '</div>' +
+      barHtml(effPct, color) + '</div>';
+  });
+  document.getElementById('tab-passing').innerHTML = html + '</div>';
+}
+
+function renderMfr(mfrs, drivers) {
+  var cards = '<div class="mfr-grid">';
+  mfrs.forEach(function(m) {
+    var color = MFR_COLOR[m.manufacturer] || '#888';
+    cards += '<div class="mfr-card" style="border-left-color:' + color + '">' +
+      '<div style="font-size:15px;font-weight:500">' + m.manufacturer + '</div>' +
+      '<div class="mfr-stats">' +
+      '<div><div class="mfr-stat-val">' + m.rating_plus + '</div><div class="mfr-stat-lbl">rating+</div></div>' +
+      '<div><div class="mfr-stat-val">' + m.finish_plus + '</div><div class="mfr-stat-lbl">finish+</div></div>' +
+      '<div><div class="mfr-stat-val">' + m.qp_plus + '</div><div class="mfr-stat-lbl">qual pass+</div></div>' +
+      '<div><div class="mfr-stat-val">' + m.pass_ratio_plus + '</div><div class="mfr-stat-lbl">pass ratio+</div></div>' +
+      '</div><div style="margin-top:10px;font-size:11px;color:#666">' + m.drivers + ' drivers · ' + m.entries + ' entries</div></div>';
+  });
+  cards += '</div>';
+
+  var maxRating = Math.max.apply(null, drivers.map(function(d) { return d.avg_rating || 0; }));
+  var sorted = drivers.slice().sort(function(a,b) { return b.avg_rating - a.avg_rating; });
+  var rows = '<div class="table-wrap"><div class="row header" style="grid-template-columns:160px 60px 70px 70px 65px 65px 1fr;"><div>Driver</div><div>Mfr</div><div>Avg finish</div><div>Pos gained</div><div>QP</div><div>Rating</div><div>Rating bar</div></div>';
+  sorted.forEach(function(d) {
+    var pct = ((d.avg_rating || 0) / maxRating * 100);
+    var color = MFR_COLOR[d.manufacturer] || '#888';
+    var pgColor = d.avg_pos_gained < -5 ? '#3B6D11' : d.avg_pos_gained > 5 ? '#A32D2D' : '#BA7517';
+    rows += '<div class="row" style="grid-template-columns:160px 60px 70px 70px 65px 65px 1fr;">' +
+      '<div style="font-weight:500">' + d.driver_name + '</div>' +
+      '<div>' + mfrBadge(d.manufacturer) + '</div>' +
+      '<div class="num">' + (d.avg_finish != null ? d.avg_finish.toFixed(1) : '—') + '</div>' +
+      '<div style="font-weight:500;color:' + pgColor + '">' + (d.avg_pos_gained > 0 ? '+' : '') + (d.avg_pos_gained != null ? d.avg_pos_gained.toFixed(1) : '—') + '</div>' +
+      '<div class="muted">' + (d.avg_quality_passes != null ? d.avg_quality_passes.toFixed(1) : '—') + '</div>' +
+      '<div class="num">' + (d.avg_rating != null ? d.avg_rating.toFixed(1) : '—') + '</div>' +
+      barHtml(pct, color) + '</div>';
+  });
+  document.getElementById('tab-mfr').innerHTML = cards + rows + '</div>';
+}
+
+function renderDeg(drivers) {
+  var withDeg = drivers.filter(function(d) { return d.lap_early && d.lap_mid && d.lap_late; });
+  var sorted = withDeg.slice().sort(function(a,b) { return b.lap_early - a.lap_early; });
+  var html = '<div style="font-size:12px;color:#666;margin-bottom:10px;">Avg lap speed by segment. Drop-off = early minus late. Green &lt;1mph, amber 1-2mph, red &gt;2mph.</div>' +
+    '<div class="table-wrap"><div class="row header" style="grid-template-columns:160px 60px 70px 70px 70px 75px 1fr;"><div>Driver</div><div>Mfr</div><div>Early</div><div>Mid</div><div>Late</div><div>Drop-off</div><div>Stint shape</div></div>';
+  sorted.forEach(function(d) {
+    var color = MFR_COLOR[d.manufacturer] || '#888';
+    var dropoff = (d.lap_early - d.lap_late).toFixed(2);
+    var dropColor = parseFloat(dropoff) < 1 ? '#3B6D11' : parseFloat(dropoff) > 2 ? '#A32D2D' : '#BA7517';
+    var base = 152, range = 8, maxH = 28;
+    var earlyH = Math.round(((d.lap_early - base) / range) * maxH + 4);
+    var midH = Math.round(((d.lap_mid - base) / range) * maxH + 4);
+    var lateH = Math.round(((d.lap_late - base) / range) * maxH + 4);
+    html += '<div class="row" style="grid-template-columns:160px 60px 70px 70px 70px 75px 1fr;">' +
+      '<div style="font-weight:500">' + d.driver_name + '</div>' +
+      '<div>' + mfrBadge(d.manufacturer) + '</div>' +
+      '<div class="muted">' + d.lap_early.toFixed(1) + '</div>' +
+      '<div class="muted">' + d.lap_mid.toFixed(1) + '</div>' +
+      '<div class="muted">' + d.lap_late.toFixed(1) + '</div>' +
+      '<div style="font-weight:500;color:' + dropColor + '">-' + dropoff + '</div>' +
+      '<div style="display:flex;gap:2px;align-items:flex-end;height:32px;">' +
+      '<div style="width:16px;border-radius:2px;background:' + color + ';opacity:0.45;height:' + earlyH + 'px"></div>' +
+      '<div style="width:16px;border-radius:2px;background:' + color + ';opacity:0.7;height:' + midH + 'px"></div>' +
+      '<div style="width:16px;border-radius:2px;background:' + color + ';height:' + lateH + 'px"></div>' +
+      '</div></div>';
+  });
+  document.getElementById('tab-deg').innerHTML = html + '</div>';
+}
+
+async function loadLive() {
+  if (!currentRace) {
+    document.getElementById('live-content').innerHTML = '<div class="loading">Detecting active race...</div>';
+    currentRace = await detectCurrentRace();
+    if (!currentRace) {
+      document.getElementById('live-content').innerHTML = '<div class="loading">No active race found.</div>';
+      return;
+    }
+  }
+  try {
+    var res = await fetch(API + '/nascar/live/' + currentRace.race_id + '/projections');
+    if (!res.ok) {
+      document.getElementById('live-content').innerHTML = '<div class="loading">No live data yet for ' + currentRace.race_name + '.</div>';
+      return;
+    }
+    var data = await res.json();
+    if (!data || !data.projections) {
+      document.getElementById('live-content').innerHTML = '<div class="loading">Waiting for race data...</div>';
+      return;
+    }
+    renderLive(data);
+  } catch(e) {
+    document.getElementById('live-content').innerHTML = '<div class="loading">Error: ' + e.message + '</div>';
+  }
+}
+
+function renderLive(data) {
+  var lap = data.lap || 0;
+  var total = (currentRace && currentRace.scheduled_laps) || data.total_laps || '?';
+  var pct = data.race_pct || 0;
+  var updated = new Date(data.snapshot_at).toLocaleTimeString();
+
+  var raceName = currentRace ? currentRace.race_name : 'Live';
+  document.getElementById('live-info').textContent = raceName + ' · Lap ' + lap + ' of ' + total + ' · ' + pct + '% complete';
+  document.getElementById('live-updated').textContent = 'Updated ' + updated;
+
+  var projs = data.projections;
+  var html = '<div class="table-wrap">' +
+    '<div class="row header" style="grid-template-columns:40px 160px 60px 55px 70px 70px 60px 55px 60px 60px 1fr;">' +
+    '<div>Proj</div><div>Driver</div><div>Mfr</div><div>Now</div>' +
+    '<div>Best spd</div><div>Last spd</div><div>Laps led</div>' +
+    '<div>Tire age</div><div>Pits</div><div>Hist fin</div><div>Confidence</div></div>';
+
+  projs.forEach(function(p) {
+    var mfr = MFR_ABBR[p.manufacturer] || p.manufacturer || '—';
+    var color = MFR_COLOR[mfr] || '#888';
+    var badge = mfrBadge(mfr);
+    var posDiff = p.current_position - Math.round(p.projected_finish);
+    var diffColor = posDiff > 2 ? '#3B6D11' : posDiff < -2 ? '#A32D2D' : '#BA7517';
+    var diffStr = posDiff > 0 ? ('▲' + Math.abs(posDiff)) : posDiff < 0 ? ('▼' + Math.abs(posDiff)) : '—';
+    // Variance-based confidence
+    // Low stddev = consistent = high confidence
+    // High stddev = erratic = low confidence
+    var racePctWeight = pct / 100;
+    var hasHistory = p.hist_avg_finish != null;
+    var onLeadLap = p.delta_leader != null && p.delta_leader < 5;
+
+    // Consistency score from lap time variance
+    // Field typical stddev is ~3-4 mph (cautions inflate it)
+    // Pure green flag running is ~1-2 mph stddev for top cars
+    var consistencyScore = 0;
+    if (p.speed_stddev != null && p.lap_samples > 10) {
+        // Lower stddev = higher score, capped at 35 points
+        consistencyScore = Math.max(0, Math.min(35, (6 - p.speed_stddev) * 7));
+    }
+
+    var confPct = Math.min(95,
+        (racePctWeight * 40) +       // 0-40 from race progress
+        (hasHistory ? 15 : 0) +      // 15 if has track history
+        consistencyScore +            // 0-35 from lap time consistency
+        (onLeadLap ? 10 : 0)         // 10 if on lead lap
+    );
+    var tireColor = p.tire_age == null ? '#888' :
+                    p.tire_age <= 20 ? '#3B6D11' :
+                    p.tire_age <= 50 ? '#BA7517' : '#A32D2D';
+
+    html += '<div class="row" style="grid-template-columns:40px 160px 60px 55px 70px 70px 60px 55px 60px 60px 1fr;">' +
+      '<div style="font-weight:500;font-size:15px">' + Math.round(p.projected_finish) + '</div>' +
+      '<div style="font-weight:500">' + p.driver_name + '</div>' +
+      '<div>' + badge + '</div>' +
+      '<div style="font-weight:500;color:' + diffColor + '">' + p.current_position + ' <span style="font-size:11px">' + diffStr + '</span></div>' +
+      '<div class="num">' + (p.best_lap_speed != null ? p.best_lap_speed.toFixed(1) : '—') + '</div>' +
+      '<div class="muted">' + (p.last_lap_speed != null ? p.last_lap_speed.toFixed(1) : '—') + '</div>' +
+      '<div class="muted">' + (p.laps_led || 0) + '</div>' +
+      '<div style="font-weight:500;color:' + tireColor + '">' + (p.tire_age != null ? p.tire_age + 'L' : '—') + '</div>' +
+      '<div class="muted">' + (p.pit_stops || 0) + '</div>' +
+      '<div class="muted">' + (p.hist_avg_finish != null ? p.hist_avg_finish.toFixed(1) : 'none') + '</div>' +
+      barHtml(confPct, color) + '</div>';
+  });
+
+  document.getElementById('live-content').innerHTML = html + '</div>';
+}
+
+async function detectCurrentRace() {
+  try {
+    var schedRes = await fetch(API + '/nascar/schedule/2026');
+    if (!schedRes.ok) return null;
+    var body = await schedRes.json();
+
+    // API returns { series_1: [...], series_2: [...], series_3: [...] }
+    // series_1 is the Cup Series
+    var races = (body.series_1 || body.races || (Array.isArray(body) ? body : []));
+    if (!races.length) return null;
+
+    // Sort by race_date descending; only consider races on or before today
+    var today = new Date();
+    today.setHours(23, 59, 59, 999);
+    var past = races.filter(function(r) {
+      return new Date(r.race_date) <= today;
+    }).sort(function(a, b) {
+      return new Date(b.race_date) - new Date(a.race_date);
+    });
+
+    if (!past.length) past = races.slice().sort(function(a, b) {
+      return new Date(b.race_date) - new Date(a.race_date);
+    });
+
+    // Find the most recent race that has live snapshot data
+    for (var i = 0; i < past.length; i++) {
+      try {
+        var liveRes = await fetch(API + '/nascar/live/' + past[i].race_id + '/projections');
+        if (liveRes.ok) {
+          var liveData = await liveRes.json();
+          if (liveData && liveData.projections && liveData.projections.length > 0) {
+            return past[i];
+          }
+        }
+      } catch(e) {}
+    }
+
+    // Fallback: most recent past race even without live data
+    return past[0] || null;
+  } catch(e) {
+    return null;
+  }
+}
+
+async function init() {
+  currentRace = await detectCurrentRace();
+
+  if (currentRace) {
+    var trackSelect = document.getElementById('track-select');
+    var trackName = currentRace.track_name || '';
+
+    // Match track_name against existing options (e.g. "Nashville Superspeedway" → "Nashville")
+    var trackMatched = false;
+    for (var i = 0; i < trackSelect.options.length; i++) {
+      if (trackName.indexOf(trackSelect.options[i].value) >= 0) {
+        trackSelect.value = trackSelect.options[i].value;
+        trackMatched = true;
+        break;
+      }
+    }
+    if (!trackMatched && trackName) {
+      // Add an option for the new track
+      var trackKey = trackName.split(' ')[0];
+      var opt = document.createElement('option');
+      opt.value = trackKey;
+      opt.textContent = trackName;
+      trackSelect.appendChild(opt);
+      trackSelect.value = trackKey;
+    }
+
+    // Match race_name against existing race filter options
+    var raceSelect = document.getElementById('race-select');
+    var raceName = currentRace.race_name || '';
+    var raceMatched = false;
+    for (var i = 1; i < raceSelect.options.length; i++) { // skip index 0 "All races"
+      var optVal = raceSelect.options[i].value;
+      if (raceName.indexOf(optVal) >= 0) {
+        raceSelect.value = optVal;
+        raceMatched = true;
+        break;
+      }
+    }
+    if (!raceMatched) {
+      raceSelect.value = ''; // Default to "All races" for unrecognized races
+    }
+  }
+
+  load();
+}
+
+init();
+</script>
+</body>
+</html>

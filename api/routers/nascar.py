@@ -372,39 +372,105 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
         # Look up race metadata so we can use the correct total laps and
         # pull historically comparable races at the same track / race name.
         race_meta_sql = text("""
-            SELECT track_name, race_name, scheduled_laps, actual_laps
+            SELECT track_name, race_name, scheduled_laps, actual_laps, track_type
             FROM nascar.races
             WHERE race_id = :race_id
         """)
         race_meta = db.execute(race_meta_sql, {"race_id": race_id}).mappings().first()
-        track_name = race_meta["track_name"] if race_meta else None
-        race_name  = race_meta["race_name"]  if race_meta else None
+        track_name  = race_meta["track_name"]  if race_meta else None
+        race_name   = race_meta["race_name"]   if race_meta else None
+        track_type  = race_meta["track_type"]  if race_meta else "intermediate"
 
         hist_sql = text("""
+            WITH race_meta AS (
+                SELECT track_name, track_type, scheduled_laps
+                FROM nascar.races
+                WHERE race_id = :race_id
+            ),
+            same_track AS (
+                SELECT
+                    res.driver_name,
+                    AVG(res.finish_position) as avg_finish,
+                    AVG(res.average_running_position) as avg_running,
+                    COUNT(*) as races
+                FROM nascar.results res
+                JOIN nascar.races r ON r.race_id = res.race_id
+                CROSS JOIN race_meta rm
+                WHERE r.track_name = rm.track_name
+                AND res.race_id != :race_id
+                AND res.finish_position > 0
+                AND r.season >= 2023
+                GROUP BY res.driver_name
+            ),
+            same_type AS (
+                SELECT
+                    res.driver_name,
+                    AVG(res.finish_position) as avg_finish,
+                    AVG(res.average_running_position) as avg_running,
+                    COUNT(*) as races
+                FROM nascar.results res
+                JOIN nascar.races r ON r.race_id = res.race_id
+                CROSS JOIN race_meta rm
+                WHERE r.track_type = rm.track_type
+                AND res.race_id != :race_id
+                AND res.finish_position > 0
+                AND r.season >= 2024
+                GROUP BY res.driver_name
+            ),
+            all_track AS (
+                SELECT
+                    res.driver_name,
+                    AVG(res.finish_position) as avg_finish,
+                    AVG(res.average_running_position) as avg_running,
+                    COUNT(*) as races
+                FROM nascar.results res
+                JOIN nascar.races r ON r.race_id = res.race_id
+                WHERE res.race_id != :race_id
+                AND res.finish_position > 0
+                AND r.season >= 2024
+                GROUP BY res.driver_name
+            )
             SELECT
-                res.driver_name,
-                res.driver_id,
-                ROUND(AVG(res.finish_position)::numeric, 2) as hist_avg_finish,
-                ROUND(AVG(res.avg_position)::numeric, 2) as hist_avg_running_pos,
-                ROUND(AVG(ds.driver_rating)::numeric, 2) as hist_rating
-            FROM nascar.results res
-            JOIN nascar.races r ON r.race_id = res.race_id
-            LEFT JOIN nascar.driver_stats ds ON ds.race_id = res.race_id
-                AND ds.driver_id = res.driver_id
-            WHERE r.track_name ILIKE :track_pattern
-            AND r.race_name ILIKE :race_pattern
-            AND res.finish_position > 0
-            GROUP BY res.driver_name, res.driver_id
+                COALESCE(st.driver_name, stype.driver_name, at.driver_name) as driver_name,
+                CASE
+                    WHEN st.races >= 2 THEN
+                        (st.avg_finish * 0.50) +
+                        (COALESCE(stype.avg_finish, at.avg_finish, 20) * 0.30) +
+                        (COALESCE(at.avg_finish, 20) * 0.20)
+                    WHEN stype.races >= 3 THEN
+                        (stype.avg_finish * 0.65) +
+                        (COALESCE(at.avg_finish, 20) * 0.35)
+                    ELSE
+                        COALESCE(at.avg_finish, 20)
+                END as hist_avg_finish,
+                CASE
+                    WHEN st.races >= 2 THEN
+                        (COALESCE(st.avg_running, st.avg_finish) * 0.50) +
+                        (COALESCE(stype.avg_running, stype.avg_finish, at.avg_finish, 20) * 0.30) +
+                        (COALESCE(at.avg_running, at.avg_finish, 20) * 0.20)
+                    WHEN stype.races >= 3 THEN
+                        (COALESCE(stype.avg_running, stype.avg_finish) * 0.65) +
+                        (COALESCE(at.avg_running, at.avg_finish, 20) * 0.35)
+                    ELSE
+                        COALESCE(at.avg_running, at.avg_finish, 20)
+                END as hist_avg_running,
+                COALESCE(st.races, 0) as same_track_races,
+                COALESCE(stype.races, 0) as same_type_races,
+                COALESCE(at.races, 0) as all_track_races
+            FROM all_track at
+            FULL OUTER JOIN same_type stype ON stype.driver_name = at.driver_name
+            FULL OUTER JOIN same_track st ON st.driver_name = COALESCE(stype.driver_name, at.driver_name)
         """)
-        # Use first word of track_name / race_name as a loose pattern match so
-        # e.g. "Martinsville Speedway" → '%Martinsville%', "Cook Out 400" → '%Cook Out%'
-        track_word = track_name.split()[0] if track_name else "unknown"
-        race_words = " ".join((race_name or "").split()[:2])
-        hist_rows = db.execute(hist_sql, {
-            "track_pattern": f"%{track_word}%",
-            "race_pattern": f"%{race_words}%",
-        }).mappings().all()
-        hist_map = {r["driver_name"]: dict(r) for r in hist_rows}
+        hist_rows = db.execute(hist_sql, {"race_id": race_id}).mappings().all()
+        hist_map = {
+            r["driver_name"]: {
+                "hist_avg_finish":  float(r["hist_avg_finish"]  or 20),
+                "hist_avg_running": float(r["hist_avg_running"] or 20),
+                "same_track_races": int(r["same_track_races"]   or 0),
+                "same_type_races":  int(r["same_type_races"]    or 0),
+            }
+            for r in hist_rows
+        }
 
         variance_sql = text("""
             SELECT
@@ -443,7 +509,7 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
 
             if hist.get("hist_avg_finish"):
                 hist_finish = float(hist["hist_avg_finish"])
-                hist_running = float(hist.get("hist_avg_running_pos") or hist_finish)
+                hist_running = float(hist.get("hist_avg_running") or hist_finish)
             else:
                 hist_finish = float(current_pos)
                 hist_running = float(current_pos)
@@ -494,9 +560,10 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
                 "best_lap_speed": float(s["best_lap_speed"]) if s["best_lap_speed"] else None,
                 "pit_stops": s["pit_stops"],
                 "delta_leader": float(s["delta_leader"]) if s["delta_leader"] else None,
-                "hist_avg_finish": float(hist["hist_avg_finish"]) if hist.get("hist_avg_finish") else None,
-                "hist_rating": float(hist["hist_rating"]) if hist.get("hist_rating") else None,
+                "hist_avg_finish": hist.get("hist_avg_finish"),
                 "has_history": bool(hist),
+                "same_track_races": hist.get("same_track_races", 0),
+                "same_type_races": hist.get("same_type_races", 0),
                 "tire_age": tire_age,
                 "last_pit_lap": s["last_pit_lap"],
                 "speed_stddev": speed_stddev,
@@ -510,6 +577,8 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
 
         return {
             "race_id": race_id,
+            "track_name": track_name,
+            "track_type": track_type,
             "lap": lap,
             "total_laps": total_laps,
             "race_pct": round(race_pct * 100, 1),

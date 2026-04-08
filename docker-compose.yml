@@ -1,0 +1,67 @@
+services:
+
+  db:
+    image: postgres:16
+    container_name: sports_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sportsuser -d sportsplatform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./api
+    container_name: sports_api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    volumes:
+      - ./api:/app
+      - ./pipeline:/pipeline
+      - ./frontend:/frontend
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: sports_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    ports:
+      - "5050:80"
+    depends_on:
+      - db
+
+  scheduler:
+    build: ./api
+    container_name: sports_scheduler
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    volumes:
+      - ./api:/app
+      - ./pipeline:/pipeline
+    depends_on:
+      db:
+        condition: service_healthy
+    command: bash -c "cd /app && PYTHONPATH=/app:/pipeline python3 /pipeline/daily_pipeline.py"
+
+volumes:
+  postgres_data:
+    external: true
+    name: sports-platform_postgres_data

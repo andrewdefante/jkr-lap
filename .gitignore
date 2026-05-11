@@ -26,3 +26,7 @@ env/
 
 # Docker volumes (local data)
 postgres_data/
+
+# Pipeline cache
+pipeline/**/.cache/
+*.parquet

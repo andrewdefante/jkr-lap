@@ -443,6 +443,10 @@ def transform_game_pk(game_pk: int, db):
     n_pitches = transform_pitches(raw, db)
     print(f"    ✓ pitches: {n_pitches} rows")
 
+    from mlb.backfill_counts import backfill_game
+    n_counts = backfill_game(raw.game_pk, db)
+    print(f"    ✓ count reconstruction: {n_counts} pitches")
+
     n_runners = transform_runners(raw, db)
     print(f"    ✓ runners: {n_runners} rows")
 

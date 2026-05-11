@@ -30,6 +30,7 @@ from database import SessionLocal
 POLL_INTERVAL = 120  # seconds
 MLB_SCHEDULE  = "https://statsapi.mlb.com/api/v1/schedule"
 MLB_LIVE_FEED = "https://statsapi.mlb.com/api/v1.1/game/{game_pk}/feed/live"
+API_BASE      = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
 
 def get_live_games(target_date: str = None) -> list:
@@ -341,7 +342,7 @@ def main():
                 if game_pk not in snapshotted_games:
                     try:
                         snap_res = httpx.post(
-                            f"http://localhost:8000/mlb/matchup/snapshot/{game_pk}",
+                            f"{API_BASE}/mlb/matchup/snapshot/{game_pk}",
                             timeout=30
                         )
                         if snap_res.status_code == 200:

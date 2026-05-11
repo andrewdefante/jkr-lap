@@ -391,7 +391,7 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
                 SELECT
                     res.driver_name,
                     AVG(res.finish_position) as avg_finish,
-                    AVG(res.average_running_position) as avg_running,
+                    AVG(res.avg_position) as avg_running,
                     COUNT(*) as races
                 FROM nascar.results res
                 JOIN nascar.races r ON r.race_id = res.race_id
@@ -406,7 +406,7 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
                 SELECT
                     res.driver_name,
                     AVG(res.finish_position) as avg_finish,
-                    AVG(res.average_running_position) as avg_running,
+                    AVG(res.avg_position) as avg_running,
                     COUNT(*) as races
                 FROM nascar.results res
                 JOIN nascar.races r ON r.race_id = res.race_id
@@ -421,7 +421,7 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
                 SELECT
                     res.driver_name,
                     AVG(res.finish_position) as avg_finish,
-                    AVG(res.average_running_position) as avg_running,
+                    AVG(res.avg_position) as avg_running,
                     COUNT(*) as races
                 FROM nascar.results res
                 JOIN nascar.races r ON r.race_id = res.race_id

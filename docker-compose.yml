@@ -53,13 +53,33 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      PYTHONPATH: /app:/pipeline
+      TZ: America/New_York
     volumes:
       - ./api:/app
       - ./pipeline:/pipeline
     depends_on:
       db:
         condition: service_healthy
-    command: bash -c "cd /app && PYTHONPATH=/app:/pipeline python3 /pipeline/daily_pipeline.py"
+    command: python3 /pipeline/daily_pipeline.py
+
+  live_poller:
+    build: ./api
+    container_name: sports_live_poller
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PYTHONPATH: /app:/pipeline
+      API_BASE_URL: http://api:8000
+    volumes:
+      - ./api:/app
+      - ./pipeline:/pipeline
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+    command: python3 /pipeline/mlb/live_poller.py
 
 volumes:
   postgres_data:

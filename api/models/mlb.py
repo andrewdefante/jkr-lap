@@ -11,8 +11,8 @@ All tables live in the 'mlb' Postgres schema. No cross-sport dependencies.
 """
 
 from sqlalchemy import (
-    Column, BigInteger, Integer, String, Float, Boolean,
-    DateTime, Text, Index, UniqueConstraint
+    Column, BigInteger, Integer, SmallInteger, String, Float, Boolean,
+    DateTime, Text, Index, UniqueConstraint, CHAR
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
@@ -246,6 +246,10 @@ class MLBPitch(Base):
     hit_hardness = Column(String(20), nullable=True)        # soft, medium, hard
     hit_coord_x = Column(Float, nullable=True)              # spray chart x
     hit_coord_y = Column(Float, nullable=True)              # spray chart y
+
+    # Count BEFORE this pitch (reconstructed from call_code sequence)
+    balls_before = Column(SmallInteger, nullable=True)
+    strikes_before = Column(SmallInteger, nullable=True)
 
     # Count AFTER this pitch
     balls_after = Column(Integer, nullable=True)
@@ -798,3 +802,116 @@ class MLBPitchQualityScore(Base):
     # season_bapv_plus, last_30_bapv_plus computed from aggregating rows
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MLBPitcherMixProfile(Base):
+    """
+    Pitcher platoon mix profiles — pitch usage and outcomes split by batter handedness.
+    One row per pitcher per season per pitch type per bat side.
+    """
+    __tablename__ = "pitcher_mix_profile"
+    __table_args__ = (
+        Index("ix_pitcher_mix_profile_pitcher_id", "pitcher_id", "season"),
+        UniqueConstraint("pitcher_id", "season", "pitch_type_code", "bat_side",
+                        name="uq_pitcher_mix_profile"),
+        {"schema": "mlb"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    pitcher_id = Column(Integer, nullable=False)
+    pitcher_name = Column(String(100), nullable=True)
+    season = Column(Integer, nullable=False)
+    pitch_type_code = Column(String(5), nullable=False)
+    bat_side = Column(CHAR(1), nullable=False)   # 'L' or 'R'
+
+    pitches = Column(Integer, nullable=True)
+    usage_pct = Column(Float, nullable=True)
+    whiff_rate = Column(Float, nullable=True)
+    csw_rate = Column(Float, nullable=True)
+    avg_velo = Column(Float, nullable=True)
+    hard_hit_rate = Column(Float, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class MLBBBrefBatting(Base):
+    """
+    Season batting stats from Baseball Reference via pybaseball.batting_stats_bref().
+    One row per player per season (multi-team players are aggregated to totals).
+    mlb_id is the MLBAM ID — direct join key to player_id_map.mlbam_id.
+    """
+    __tablename__ = "bbref_batting"
+    __table_args__ = (
+        Index("ix_mlb_bbref_batting_mlb_id", "mlb_id"),
+        Index("ix_mlb_bbref_batting_year", "year_id"),
+        UniqueConstraint("mlb_id", "year_id", name="uq_bbref_batting_player_year"),
+        {"schema": "mlb"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    mlb_id = Column(Integer, nullable=True)          # MLBAM ID (from BBref mlbID column)
+    year_id = Column(Integer, nullable=False)
+    name = Column(String(100), nullable=True)
+    team = Column(String(50), nullable=True)          # full name or "2TM"/"3TM" for multi-team
+    age = Column(Integer, nullable=True)
+
+    g = Column(Integer, nullable=True)
+    pa = Column(Integer, nullable=True)
+    ab = Column(Integer, nullable=True)
+    r = Column(Integer, nullable=True)
+    h = Column(Integer, nullable=True)
+    doubles = Column(Integer, nullable=True)
+    triples = Column(Integer, nullable=True)
+    hr = Column(Integer, nullable=True)
+    rbi = Column(Integer, nullable=True)
+    bb = Column(Integer, nullable=True)
+    ibb = Column(Integer, nullable=True)
+    so = Column(Integer, nullable=True)
+    hbp = Column(Integer, nullable=True)
+    sh = Column(Integer, nullable=True)
+    sf = Column(Integer, nullable=True)
+    gdp = Column(Integer, nullable=True)
+    sb = Column(Integer, nullable=True)
+    cs = Column(Integer, nullable=True)
+
+    ba = Column(Float, nullable=True)
+    obp = Column(Float, nullable=True)
+    slg = Column(Float, nullable=True)
+    ops = Column(Float, nullable=True)
+    ops_plus = Column(Integer, nullable=True)   # computed: 100*(OBP/lgOBP + SLG/lgSLG - 1), no park adj
+
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+
+class MLBPitcherCountMix(Base):
+    """
+    Pitcher pitch-type usage by count (balls-strikes) and batter handedness.
+    Built by build_count_mix.py after backfill_counts.py populates balls_before/strikes_before.
+    """
+    __tablename__ = "pitcher_count_mix"
+    __table_args__ = (
+        Index("ix_pitcher_count_mix_pitcher", "pitcher_id", "season"),
+        UniqueConstraint(
+            "pitcher_id", "season", "bat_side", "balls", "strikes", "pitch_type_code",
+            name="uq_pitcher_count_mix"
+        ),
+        {"schema": "mlb"},
+    )
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    pitcher_id = Column(Integer, nullable=False)
+    pitcher_name = Column(String(100), nullable=True)
+    season = Column(Integer, nullable=False)
+    bat_side = Column(CHAR(1), nullable=False)
+    balls = Column(SmallInteger, nullable=False)
+    strikes = Column(SmallInteger, nullable=False)
+    pitch_type_code = Column(String(5), nullable=False)
+    pitches = Column(Integer, nullable=True)
+    usage_pct = Column(Float, nullable=True)
+    whiff_rate = Column(Float, nullable=True)
+    csw_rate = Column(Float, nullable=True)
+    called_strike_rate = Column(Float, nullable=True)
+    ball_rate = Column(Float, nullable=True)
+    avg_velo = Column(Float, nullable=True)
+    computed_at = Column(DateTime(timezone=True), server_default=func.now())

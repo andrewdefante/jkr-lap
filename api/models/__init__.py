@@ -11,7 +11,8 @@ from models.mlb import (
     MLBBoxscorePitching, MLBBoxscoreFielding, MLBFieldingCredit,
     MLBFangraphsBatting, MLBFangraphsPitching, MLBPlayerIDMap,
     MLBBatterPitchTypeTendencies, MLBBatterZoneTendencies,
-    MLBLinearWeights, MLBPitchQualityScore
+    MLBLinearWeights, MLBPitchQualityScore, MLBPitcherMixProfile,
+    MLBBBrefBatting
 )
 from models.f1 import (
     F1RawEvent, F1Race, F1Result, F1LapTime,

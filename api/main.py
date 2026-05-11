@@ -4,7 +4,7 @@ from sqlalchemy import text
 from database import engine
 from models.base import Base
 import models
-from routers import health, mlb, nascar
+from routers import health, mlb, nascar, f1
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import os
@@ -33,6 +33,7 @@ def on_startup():
 app.include_router(health.router)
 app.include_router(mlb.router, prefix="/mlb", tags=["MLB"])
 app.include_router(nascar.router, prefix="/nascar", tags=["NASCAR"])
+app.include_router(f1.router)
 
 @app.get("/dashboard", include_in_schema=False)
 def dashboard():
@@ -40,5 +41,8 @@ def dashboard():
 
 @app.get("/mlb-dashboard")
 async def mlb_dashboard():
-    from fastapi.responses import FileResponse
     return FileResponse("/frontend/mlb.html")
+
+@app.get("/f1-dashboard")
+async def f1_dashboard():
+    return FileResponse("/frontend/f1.html")

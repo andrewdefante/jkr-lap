@@ -1019,7 +1019,12 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                             "pitches": pitch_log,
                             "pitch_count": pitch_count}
             else:
-                foul_prob = 0.40 if strikes < 2 else 0.35
+                # Foul probability by strike count: batters foul off ~70% of
+                # early-count contact (extending the PA), dropping to 35% in
+                # 2-strike counts (more desperate, more fair contact).
+                # Calibrated so first-pitch BIP ≈ 7% (real MLB) vs 14% with
+                # the old flat 0.40, which was also suppressing walk rates.
+                foul_prob = {0: 0.70, 1: 0.55}.get(strikes, 0.35)
                 if random.random() < foul_prob:
                     if strikes < 2:
                         strikes += 1

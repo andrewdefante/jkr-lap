@@ -431,15 +431,22 @@ def pitcher_season_comparison(
         if bbref and bbref["bbref_war"] is not None:
             fg_merged["war"] = float(bbref["bbref_war"])
 
-        goose2_sql = text("""
-            SELECT ROUND(goose2_plus::numeric,1) as goose2_plus,
-                   ROUND(goose2_raw::numeric,1) as goose2_raw,
-                   ROUND(goose2_vs_lhh::numeric,1) as goose2_vs_lhh,
-                   ROUND(goose2_vs_rhh::numeric,1) as goose2_vs_rhh
-            FROM mlb.goose2_overall
+        pk_sql = text("""
+            SELECT ROUND(pk_plus::numeric,1) as pk_plus,
+                   ROUND(pk_vs_lhh::numeric,1) as pk_vs_lhh,
+                   ROUND(pk_vs_rhh::numeric,1) as pk_vs_rhh
+            FROM mlb.pk_overall
             WHERE pitcher_id = :pid AND season = :season
         """)
-        goose2 = db.execute(goose2_sql, {"pid": pitcher_id, "season": 2026}).mappings().first()
+        phr_sql = text("""
+            SELECT ROUND(phr_plus::numeric,1) as phr_plus,
+                   ROUND(phr_vs_lhh::numeric,1) as phr_vs_lhh,
+                   ROUND(phr_vs_rhh::numeric,1) as phr_vs_rhh
+            FROM mlb.phr_overall
+            WHERE pitcher_id = :pid AND season = :season
+        """)
+        pk  = db.execute(pk_sql,  {"pid": pitcher_id, "season": 2026}).mappings().first()
+        phr = db.execute(phr_sql, {"pid": pitcher_id, "season": 2026}).mappings().first()
 
         return {
             "pitcher_id": pitcher_id,
@@ -449,7 +456,8 @@ def pitcher_season_comparison(
                 "overall": safe_row(overall_goose) if overall_goose else None,
                 "by_pitch": [safe_row(r) for r in goose_rows],
             },
-            "goose2": safe_row(goose2) if goose2 else None,
+            "pk":  safe_row(pk)  if pk  else None,
+            "phr": safe_row(phr) if phr else None,
             "fg_stats": fg_merged,
             "season_k": int(box_row["season_k"]) if box_row and box_row["season_k"] else None,
             "season_bb": int(box_row["season_bb"]) if box_row and box_row["season_bb"] else None,
@@ -666,21 +674,61 @@ def mlb_leaderboard(
             ROUND(AVG(pq.csw_rate)::numeric, 3) as csw_rate,
             ROUND(AVG(pq.hard_hit_rate)::numeric, 3) as hard_hit_rate,
             COUNT(DISTINCT pq.game_pk) as games,
-            MAX(g2.goose2_plus) as goose2_plus
+            MAX(pk.pk_plus) as pk_plus,
+            MAX(phr.phr_plus) as phr_plus,
+            MAX(g3.goose3_plus) as goose3_plus,
+            MAX(so.stuff_score) as stuff_score
         FROM mlb.pitch_quality_scores pq
-        LEFT JOIN mlb.goose2_overall g2
-            ON g2.pitcher_id = pq.pitcher_id AND g2.season = pq.season
+        LEFT JOIN mlb.pk_overall pk
+            ON pk.pitcher_id = pq.pitcher_id AND pk.season = pq.season
+        LEFT JOIN mlb.phr_overall phr
+            ON phr.pitcher_id = pq.pitcher_id AND phr.season = pq.season
+        LEFT JOIN mlb.goose3_overall g3
+            ON g3.pitcher_id = pq.pitcher_id AND g3.season = pq.season
+        LEFT JOIN mlb.stuff_overall so
+            ON so.pitcher_id = pq.pitcher_id AND so.season = pq.season
         WHERE pq.season = :season
         AND pq.game_type = 'R'
         GROUP BY pq.pitcher_id, pq.pitch_type_code
         HAVING SUM(pq.pitches_thrown) >= :min_pitches
-        ORDER BY season_bapv_plus DESC
+        ORDER BY MAX(g3.goose3_plus) DESC NULLS LAST
         LIMIT 200
     """)
     rows = db.execute(sql, {"season": season, "min_pitches": min_pitches}).mappings().all()
     result = {"pitchers": [dict(r) for r in rows]}
     cache_set(cache_key, result)
     return result
+
+
+@router.get("/pitcher/pk-phr/leaderboard")
+def pk_phr_leaderboard(season: int = 2026, min_pitches: int = 100,
+                       db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    sql = text("""
+        SELECT
+            pk.pitcher_id, pk.pitcher_name, pk.pitch_hand,
+            ROUND(pk.pk_plus::numeric, 1)     as pk_plus,
+            ROUND(pk.pk_vs_lhh::numeric, 1)   as pk_vs_lhh,
+            ROUND(pk.pk_vs_rhh::numeric, 1)   as pk_vs_rhh,
+            ROUND(phr.phr_plus::numeric, 1)   as phr_plus,
+            ROUND(phr.phr_vs_lhh::numeric, 1) as phr_vs_lhh,
+            ROUND(phr.phr_vs_rhh::numeric, 1) as phr_vs_rhh,
+            ROUND(so.stuff_score::numeric, 1)  as stuff_score,
+            ROUND(g3.goose3_plus::numeric, 1)  as goose3_plus,
+            pk.total_pitches,
+            br.era_plus
+        FROM mlb.pk_overall pk
+        LEFT JOIN mlb.phr_overall phr ON phr.pitcher_id = pk.pitcher_id AND phr.season = pk.season
+        LEFT JOIN mlb.stuff_overall so  ON so.pitcher_id  = pk.pitcher_id AND so.season  = pk.season
+        LEFT JOIN mlb.goose3_overall g3 ON g3.pitcher_id  = pk.pitcher_id AND g3.season  = pk.season
+        LEFT JOIN mlb.bbref_pitching br ON br.mlb_id = pk.pitcher_id AND br.year_id = pk.season
+        WHERE pk.season = :season AND pk.total_pitches >= :min_pitches
+        ORDER BY pk.pk_plus DESC
+        LIMIT 100
+    """)
+    rows = db.execute(sql, {"season": season, "min_pitches": min_pitches}).mappings().all()
+    return {"season": season, "pitchers": [dict(r) for r in rows]}
+
 
 @router.get("/live-game/{game_pk}/pitcher-scores")
 def live_pitcher_scores(game_pk: int, db: Session = Depends(get_db)):
@@ -2107,6 +2155,10 @@ def expanded_leaderboard(
             ROUND(fg.ip::numeric, 1) as ip,
             b.total_pitches,
             b.bapv_plus,
+            ROUND(g3.goose3_plus::numeric, 1) as goose3_plus,
+            ROUND(pk.pk_plus::numeric, 1) as pk_plus,
+            ROUND(phr.phr_plus::numeric, 1) as phr_plus,
+            ROUND(so.stuff_score::numeric, 1) as stuff_score,
             ROUND((fg.k_pct * 100)::numeric, 1) as k_pct,
             ROUND((fg.bb_pct * 100)::numeric, 1) as bb_pct,
             ROUND((fg.zone_pct * 100)::numeric, 1) as strike_pct,
@@ -2121,7 +2173,11 @@ def expanded_leaderboard(
         FROM bapv b
         LEFT JOIN fg ON fg.mlbam_id = b.pitcher_id
         LEFT JOIN mix m ON m.pitcher_id = b.pitcher_id
-        ORDER BY b.bapv_plus DESC NULLS LAST
+        LEFT JOIN mlb.goose3_overall g3 ON g3.pitcher_id = b.pitcher_id AND g3.season = :season
+        LEFT JOIN mlb.pk_overall pk ON pk.pitcher_id = b.pitcher_id AND pk.season = :season
+        LEFT JOIN mlb.phr_overall phr ON phr.pitcher_id = b.pitcher_id AND phr.season = :season
+        LEFT JOIN mlb.stuff_overall so ON so.pitcher_id = b.pitcher_id AND so.season = :season
+        ORDER BY g3.goose3_plus DESC NULLS LAST
     """)
     rows = db.execute(sql, {"season": season, "min_pitches": min_pitches}).mappings().all()
     return {"pitchers": [dict(r) for r in rows], "season": season, "n": len(rows)}
@@ -2628,10 +2684,13 @@ def lineup_stats(game_pk: int, season: int = 2026, db: Session = Depends(get_db)
                        COALESCE(SUM(bb.sac_flies),0), 0) +
                 SUM(bb.total_bases)::numeric / NULLIF(SUM(bb.at_bats), 0)
             , 3) as ops,
-            ROUND(SUM(bb.strikeouts)::numeric / NULLIF(SUM(bb.at_bats), 0) * 100, 1) as k_pct
+            ROUND(SUM(bb.strikeouts)::numeric / NULLIF(SUM(bb.at_bats), 0) * 100, 1) as k_pct,
+            ROUND(MAX(j2.juiced2_plus)::numeric, 1) as juiced2_plus
         FROM mlb.boxscore_batting bb
         JOIN mlb.games g ON g.game_pk = bb.game_pk
         LEFT JOIN mlb.at_bats ab ON ab.game_pk = bb.game_pk AND ab.batter_id = bb.player_id
+        LEFT JOIN mlb.juiced2_scores j2
+            ON j2.batter_id = bb.player_id AND j2.season = :season
         WHERE bb.player_id = ANY(:bids)
         AND g.season = :season
         AND g.game_type = 'R'
@@ -3178,12 +3237,21 @@ def simulate_at_bat(payload: dict, db: Session = Depends(get_db)):
     season = int(payload.get("season", 2026))
     balls_start = max(0, min(3, int(payload.get("balls", 0))))
     strikes_start = max(0, min(2, int(payload.get("strikes", 0))))
+    game_pk = payload.get("game_pk")
+    game_pk = int(game_pk) if game_pk else None
 
     if not pitcher_id or not batter_id:
         raise HTTPException(status_code=400, detail="pitcher_id and batter_id required")
 
+    on_first = bool(runners.get("first", False))
+    on_second = bool(runners.get("second", False))
+    on_third = bool(runners.get("third", False))
+
     sim = run_simulation(pitcher_id, batter_id, n_sims, db,
-                         balls_start=balls_start, strikes_start=strikes_start)
+                         balls_start=balls_start, strikes_start=strikes_start,
+                         game_pk=game_pk,
+                         on_first=on_first, on_second=on_second,
+                         on_third=on_third, outs=outs)
 
     if "error" in sim:
         raise HTTPException(status_code=404, detail=sim["error"])
@@ -3223,13 +3291,26 @@ def simulate_at_bat(payload: dict, db: Session = Depends(get_db)):
         "batter_name": batter_name,
         "bat_side": sim["bat_side"],
         "n_simulations": n_sims,
-        "situation": {"outs": outs, "runners": runners, "count": f"{balls_start}-{strikes_start}"},
+        "situation": {
+            "outs": outs,
+            "runners": runners,
+            "count": f"{balls_start}-{strikes_start}",
+            "state_label": sim.get("splits_context", {}).get("state_label", ""),
+        },
         "context": {
             "goose_plus": float(goose) if goose else None,
             "juiced_plus": float(juiced) if juiced else None,
             "goose3_plus": float(goose3["goose3_plus"]) if goose3 and goose3["goose3_plus"] else None,
             "stuff_score": float(goose3["avg_stuff"]) if goose3 and goose3["avg_stuff"] else None,
             "stuff_outcomes_gap": float(goose3["stuff_outcomes_gap"]) if goose3 and goose3["stuff_outcomes_gap"] else None,
+            "weather": (lambda r: dict(r) if r else None)(
+                db.execute(text("""
+                    SELECT temperature_f, wind_speed_mph, wind_direction_deg,
+                           weather_condition, wind_hr_modifier, temp_hr_modifier,
+                           combined_hr_modifier, venue_name, is_indoor
+                    FROM mlb.game_weather WHERE game_pk = :gp
+                """), {"gp": game_pk}).mappings().first()
+            ) if game_pk else None,
         },
         "results": sim["results"],
         "outcome_distribution": sim["outcome_distribution"],
@@ -3237,7 +3318,28 @@ def simulate_at_bat(payload: dict, db: Session = Depends(get_db)):
         "sample_pas": sim["sample_pas"],
         "data_quality": sim["data_quality"],
         "count_mix_source": sim["count_mix_source"],
+        "splits_context": sim.get("splits_context", {}),
     }
+
+
+@router.get("/weather/today")
+def weather_today(db: Session = Depends(get_db)):
+    """Get weather conditions for today's games."""
+    from sqlalchemy import text
+    sql = text("""
+        SELECT gw.game_pk, gw.team_abbrev, gw.venue_name, gw.is_indoor,
+               gw.temperature_f, gw.humidity_pct, gw.wind_speed_mph,
+               gw.wind_direction_deg, gw.wind_gust_mph, gw.precipitation_in,
+               gw.weather_condition, gw.wind_hr_modifier, gw.temp_hr_modifier,
+               gw.combined_hr_modifier, gw.fetched_at
+        FROM mlb.game_weather gw
+        JOIN mlb.games g ON g.game_pk = gw.game_pk
+        WHERE g.game_date = CURRENT_DATE
+        ORDER BY gw.team_abbrev
+    """)
+    rows = db.execute(sql).mappings().all()
+    return {"date": str(__import__('datetime').date.today()),
+            "games": [dict(r) for r in rows]}
 
 
 @router.get("/leaderboard/daily-projections")
@@ -3249,13 +3351,17 @@ def daily_projections(
     target = date or datetime.utcnow().strftime("%Y-%m-%d")
 
     rows = db.execute(text("""
-        SELECT pitcher_id, pitcher_name, pitcher_hand, team_abbrev, opp_abbrev,
-               goose_plus, bapv_plus, proj_k_pct, proj_hr_pct, proj_hit_pct,
-               proj_ops, proj_ks_6inn, proj_bb_pct, batters_simulated,
-               simulations_per_batter, snapshot_date, game_pk
-        FROM mlb.daily_projections
-        WHERE snapshot_date = :d
-        ORDER BY proj_k_pct DESC NULLS LAST
+        SELECT dp.pitcher_id, dp.pitcher_name, dp.pitcher_hand, dp.team_abbrev, dp.opp_abbrev,
+               dp.goose_plus, dp.bapv_plus, dp.proj_k_pct, dp.proj_hr_pct, dp.proj_hit_pct,
+               dp.proj_ops, dp.proj_ks_6inn, dp.proj_bb_pct, dp.batters_simulated,
+               dp.simulations_per_batter, dp.snapshot_date, dp.game_pk,
+               ROUND(pk.pk_plus::numeric, 1) as pk_plus,
+               ROUND(g3.goose3_plus::numeric, 1) as goose3_plus
+        FROM mlb.daily_projections dp
+        LEFT JOIN mlb.pk_overall pk ON pk.pitcher_id = dp.pitcher_id AND pk.season = 2026
+        LEFT JOIN mlb.goose3_overall g3 ON g3.pitcher_id = dp.pitcher_id AND g3.season = 2026
+        WHERE dp.snapshot_date = :d
+        ORDER BY dp.proj_k_pct DESC NULLS LAST
     """), {"d": target}).fetchall()
 
     available = db.execute(text("""
@@ -3310,6 +3416,7 @@ def daily_batter_projections(
             ROUND(proj_obp::numeric, 3) as proj_obp,
             ROUND(proj_slg::numeric, 3) as proj_slg,
             ROUND(proj_ops::numeric, 3) as proj_ops,
+            ROUND(proj_tb::numeric, 2) as proj_tb,
             proj_hr_pct, proj_k_pct, proj_bb_pct, proj_hit_pct,
             simulations, game_pk, snapshot_date::text as snapshot_date
         FROM mlb.daily_batter_projections
@@ -3329,6 +3436,81 @@ def daily_batter_projections(
         "projections": [dict(r) for r in rows],
         "n": len(rows),
     }
+
+
+@router.get("/game/{game_pk}/score-projection")
+def game_score_projection(
+    game_pk: int,
+    n_sims: int = 500,
+    db: Session = Depends(get_db),
+):
+    """
+    Project final score for a game using inning simulator.
+    Requires lineup to be posted in mlb.game_lineups.
+    Cached 15 minutes — simulation is expensive.
+    """
+    import sys
+    sys.path.insert(0, '/pipeline')
+
+    cache_key = f"score_proj_{game_pk}_{n_sims}"
+    cached = cache_get(cache_key, 900)
+    if cached:
+        return cached
+
+    from mlb.simulate_innings import run_game_simulation
+    result = run_game_simulation(game_pk, db, n_sims)
+    if 'error' not in result:
+        cache_set(cache_key, result)
+    return result
+
+
+@router.get("/schedule/today-with-lineups")
+def schedule_with_lineups(db: Session = Depends(get_db)):
+    """
+    Today's schedule with lineup status and model scores for starting pitchers.
+    Only returns games that have lineups posted in mlb.game_lineups.
+    """
+    from sqlalchemy import text
+
+    cached = cache_get('today_with_lineups', 300)
+    if cached:
+        return cached
+
+    try:
+        rows = db.execute(text("""
+            SELECT
+                gl.game_pk,
+                gl.home_team_id,
+                gl.away_team_id,
+                gl.home_pitcher_id,
+                gl.home_pitcher_name,
+                gl.away_pitcher_id,
+                gl.away_pitcher_name,
+                gl.status,
+                gl.lineup_posted,
+                jsonb_array_length(gl.home_lineup) as home_lineup_count,
+                jsonb_array_length(gl.away_lineup) as away_lineup_count,
+                ROUND(pk_h.pk_plus::numeric, 1)    as home_pk_plus,
+                ROUND(pk_a.pk_plus::numeric, 1)    as away_pk_plus,
+                ROUND(g3_h.goose3_plus::numeric, 1) as home_goose3,
+                ROUND(g3_a.goose3_plus::numeric, 1) as away_goose3
+            FROM mlb.game_lineups gl
+            LEFT JOIN mlb.pk_overall pk_h
+                ON pk_h.pitcher_id = gl.home_pitcher_id AND pk_h.season = 2026
+            LEFT JOIN mlb.pk_overall pk_a
+                ON pk_a.pitcher_id = gl.away_pitcher_id AND pk_a.season = 2026
+            LEFT JOIN mlb.goose3_overall g3_h
+                ON g3_h.pitcher_id = gl.home_pitcher_id AND g3_h.season = 2026
+            LEFT JOIN mlb.goose3_overall g3_a
+                ON g3_a.pitcher_id = gl.away_pitcher_id AND g3_a.season = 2026
+            WHERE gl.game_date = CURRENT_DATE
+            ORDER BY gl.game_pk
+        """)).mappings().all()
+        result = {"games": [dict(r) for r in rows]}
+        cache_set('today_with_lineups', result)
+        return result
+    except Exception:
+        return {"games": [], "error": "game_lineups table not yet created — run fetch_lineups.py first"}
 
 
 @router.get("/pitcher/{pitcher_id}/pitch-physics")
@@ -3431,9 +3613,26 @@ def pitcher_percentiles(pitcher_id: int, season: int = 2026, db: Session = Depen
             LEFT JOIN mlb.fangraphs_pitching fg
                 ON fg.mlbam_id::text = m.fangraphs_id::text
                 AND fg.season = :season
+        ),
+        with_models AS (
+            SELECT
+                wb.*,
+                g3.goose3_plus,
+                pk.pk_plus,
+                phr.phr_plus
+            FROM with_bbref wb
+            LEFT JOIN mlb.goose3_overall g3
+                ON g3.pitcher_id = wb.pitcher_id AND g3.season = :season
+            LEFT JOIN mlb.pk_overall pk
+                ON pk.pitcher_id = wb.pitcher_id AND pk.season = :season
+            LEFT JOIN mlb.phr_overall phr
+                ON phr.pitcher_id = wb.pitcher_id AND phr.season = :season
         )
         SELECT
             MAX(CASE WHEN pitcher_id = :pid THEN goose_plus END) as my_goose,
+            MAX(CASE WHEN pitcher_id = :pid THEN goose3_plus END) as my_goose3,
+            MAX(CASE WHEN pitcher_id = :pid THEN pk_plus END) as my_pk,
+            MAX(CASE WHEN pitcher_id = :pid THEN phr_plus END) as my_phr,
             MAX(CASE WHEN pitcher_id = :pid THEN whiff_rate END) as my_whiff,
             MAX(CASE WHEN pitcher_id = :pid THEN csw_rate END) as my_csw,
             MAX(CASE WHEN pitcher_id = :pid THEN hard_hit_rate END) as my_hh,
@@ -3441,6 +3640,9 @@ def pitcher_percentiles(pitcher_id: int, season: int = 2026, db: Session = Depen
             MAX(CASE WHEN pitcher_id = :pid THEN k_pct END) as my_k_pct,
             MAX(CASE WHEN pitcher_id = :pid THEN bb_pct END) as my_bb_pct,
             MIN(goose_plus) as min_goose, MAX(goose_plus) as max_goose,
+            MIN(goose3_plus) as min_goose3, MAX(goose3_plus) as max_goose3,
+            MIN(pk_plus) as min_pk, MAX(pk_plus) as max_pk,
+            MIN(phr_plus) as min_phr, MAX(phr_plus) as max_phr,
             MIN(whiff_rate) as min_whiff, MAX(whiff_rate) as max_whiff,
             MIN(csw_rate) as min_csw, MAX(csw_rate) as max_csw,
             MIN(hard_hit_rate) as min_hh, MAX(hard_hit_rate) as max_hh,
@@ -3448,7 +3650,7 @@ def pitcher_percentiles(pitcher_id: int, season: int = 2026, db: Session = Depen
             MIN(k_pct) as min_k_pct, MAX(k_pct) as max_k_pct,
             MIN(bb_pct) as min_bb_pct, MAX(bb_pct) as max_bb_pct,
             COUNT(*) as n_pitchers
-        FROM with_bbref
+        FROM with_models
     """)
 
     row = db.execute(league_sql, {"pid": pitcher_id, "season": season}).mappings().first()
@@ -3848,6 +4050,122 @@ def hitter_percentiles(batter_id: int, season: int = 2026, db: Session = Depends
     }
 
 
+@router.get("/hitter/{batter_id}/juiced-splits")
+def hitter_juiced_splits(batter_id: int, season: int = 2026,
+                          db: Session = Depends(get_db)):
+    """Juiced+ splits by pitcher hand (L/R). League average = 100."""
+    from sqlalchemy import text
+
+    bat_side = db.execute(text("""
+        SELECT bat_side FROM mlb.at_bats
+        WHERE batter_id = :bid AND bat_side IS NOT NULL LIMIT 1
+    """), {"bid": batter_id}).scalar() or 'R'
+
+    overall_row = db.execute(text("""
+        SELECT ROUND(juiced2_plus::numeric,1) as juiced2_plus,
+               ROUND(quality_adj_idx::numeric,1) as quality_adj_idx,
+               ROUND(avg_goose2_faced::numeric,1) as avg_goose2_faced,
+               ROUND(ops::numeric,3) as ops,
+               total_pa
+        FROM mlb.juiced2_scores
+        WHERE batter_id = :bid AND season = :season
+    """), {"bid": batter_id, "season": season}).mappings().first()
+
+    splits_sql = text("""
+        WITH batter_stats AS (
+            SELECT
+                ab.pitch_hand,
+                COUNT(*) as pa,
+                SUM(CASE WHEN ab.event IN ('Single','Double','Triple','Home Run')
+                    THEN 1 ELSE 0 END) as hits,
+                SUM(CASE WHEN ab.event IN ('Walk','Intent Walk','Hit By Pitch')
+                    THEN 1 ELSE 0 END) as bb,
+                SUM(CASE WHEN ab.event IN ('Strikeout','Strikeout - DP')
+                    THEN 1 ELSE 0 END) as k,
+                SUM(CASE WHEN ab.event = 'Home Run' THEN 1 ELSE 0 END) as hr,
+                AVG(CASE ab.event
+                    WHEN 'Single' THEN 1.0 WHEN 'Double' THEN 2.0
+                    WHEN 'Triple' THEN 3.0 WHEN 'Home Run' THEN 4.0
+                    ELSE 0.0 END) as slg,
+                AVG(CASE WHEN ab.event IN ('Single','Double','Triple','Home Run',
+                    'Walk','Intent Walk','Hit By Pitch')
+                    THEN 1.0 ELSE 0.0 END) as obp,
+                AVG(g2.goose2_plus) as avg_goose2_faced
+            FROM mlb.at_bats ab
+            JOIN mlb.games g ON g.game_pk = ab.game_pk
+            LEFT JOIN mlb.goose2_overall g2 ON g2.pitcher_id = ab.pitcher_id
+                AND g2.season = :season
+            WHERE ab.batter_id = :bid
+            AND g.season = :season AND g.game_type = 'R'
+            AND ab.pitch_hand IN ('L','R')
+            AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+                'Caught Stealing 3B','Wild Pitch','Passed Ball')
+            GROUP BY ab.pitch_hand
+        ),
+        league_stats AS (
+            SELECT
+                ab.bat_side,
+                ab.pitch_hand,
+                AVG(CASE ab.event
+                    WHEN 'Single' THEN 1.0 WHEN 'Double' THEN 2.0
+                    WHEN 'Triple' THEN 3.0 WHEN 'Home Run' THEN 4.0
+                    ELSE 0.0 END) as lg_slg,
+                AVG(CASE WHEN ab.event IN ('Single','Double','Triple','Home Run',
+                    'Walk','Intent Walk','Hit By Pitch')
+                    THEN 1.0 ELSE 0.0 END) as lg_obp
+            FROM mlb.at_bats ab
+            JOIN mlb.games g ON g.game_pk = ab.game_pk
+            WHERE g.season = :season AND g.game_type = 'R'
+            AND ab.bat_side = :bat_side
+            AND ab.pitch_hand IN ('L','R')
+            AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+                'Caught Stealing 3B','Wild Pitch','Passed Ball')
+            GROUP BY ab.bat_side, ab.pitch_hand
+        )
+        SELECT
+            bs.pitch_hand,
+            bs.pa,
+            bs.hits, bs.bb, bs.k, bs.hr,
+            ROUND(CAST(bs.slg AS numeric), 3) as slg,
+            ROUND(CAST(bs.obp AS numeric), 3) as obp,
+            ROUND(CAST(bs.slg + bs.obp AS numeric), 3) as ops,
+            ROUND(CAST(bs.avg_goose2_faced AS numeric), 1) as avg_goose2_faced,
+            ROUND(CAST(
+                ((bs.obp / NULLIF(ls.lg_obp, 0)) +
+                 (bs.slg / NULLIF(ls.lg_slg, 0)) - 1) * 100
+            AS numeric), 0) as ops_plus,
+            ROUND(CAST(
+                (bs.slg + bs.obp) /
+                NULLIF(
+                    (ls.lg_slg + ls.lg_obp) *
+                    (100.0 / NULLIF(bs.avg_goose2_faced, 100)),
+                    0
+                ) * 100
+            AS numeric), 1) as juiced_plus
+        FROM batter_stats bs
+        LEFT JOIN league_stats ls ON ls.pitch_hand = bs.pitch_hand
+        ORDER BY bs.pitch_hand
+    """)
+
+    splits = db.execute(splits_sql, {
+        "bid": batter_id, "season": season, "bat_side": bat_side
+    }).mappings().all()
+
+    result = {
+        "batter_id": batter_id,
+        "bat_side": bat_side,
+        "season": season,
+        "overall": dict(overall_row) if overall_row else None,
+        "vs_lhp": None,
+        "vs_rhp": None,
+    }
+    for r in splits:
+        hand_key = "vs_lhp" if r['pitch_hand'] == 'L' else "vs_rhp"
+        result[hand_key] = dict(r)
+
+    return result
+
+
 @router.get("/goose2/leaderboard")
 def goose2_leaderboard(
     season: int = 2026,
@@ -4098,4 +4416,768 @@ def goose3_pitcher(pitcher_id: int, season: int = 2026,
         "season": season,
         "overall": dict(overall),
         "by_pitch": [dict(r) for r in by_pitch],
+    }
+
+
+# ── GAME COMPANION ENDPOINTS ──────────────────────────────────────────────────
+
+
+
+_TEAM_ID_TO_ABBREV = {
+    109:'ARI',144:'ATL',110:'BAL',111:'BOS',112:'CHC',145:'CWS',
+    113:'CIN',114:'CLE',115:'COL',116:'DET',117:'HOU',118:'KC',
+    108:'LAA',119:'LAD',146:'MIA',158:'MIL',142:'MIN',121:'NYM',
+    147:'NYY',133:'OAK',143:'PHI',134:'PIT',135:'SD', 137:'SF',
+    136:'SEA',138:'STL',139:'TB', 140:'TEX',141:'TOR',120:'WSH',
+}
+
+
+@router.get("/game/{game_pk}/summary")
+def game_summary(game_pk: int, db: Session = Depends(get_db)):
+    """Full game state for Game Companion."""
+    from sqlalchemy import text
+
+    game_sql = text("""
+        SELECT game_pk, game_date, game_type, season, status,
+               home_team_abbrev, away_team_abbrev,
+               home_team_id, away_team_id
+        FROM mlb.games
+        WHERE game_pk = :gp
+    """)
+    game_row = db.execute(game_sql, {"gp": game_pk}).mappings().first()
+    if not game_row:
+        raise HTTPException(status_code=404, detail="Game not found")
+    game = dict(game_row)
+    game['home_abbrev'] = game.get('home_team_abbrev') or _TEAM_ID_TO_ABBREV.get(game.get('home_team_id'), '???')
+    game['away_abbrev'] = game.get('away_team_abbrev') or _TEAM_ID_TO_ABBREV.get(game.get('away_team_id'), '???')
+
+    # Derive score and inning from at_bats
+    score_row = db.execute(text("""
+        SELECT home_score, away_score, inning, half_inning as inning_state
+        FROM mlb.at_bats WHERE game_pk = :gp
+        ORDER BY at_bat_index DESC LIMIT 1
+    """), {"gp": game_pk}).mappings().first()
+    if score_row:
+        game.update({
+            'home_score': score_row['home_score'],
+            'away_score': score_row['away_score'],
+            'inning': score_row['inning'],
+            'inning_state': score_row['inning_state'],
+        })
+    else:
+        game.update({'home_score': 0, 'away_score': 0, 'inning': None, 'inning_state': None})
+
+    abs_sql = text("""
+        SELECT
+            ab.at_bat_index,
+            ab.pitcher_id, ab.pitcher_name, ab.pitch_hand,
+            ab.batter_id, ab.batter_name, ab.bat_side,
+            ab.inning, ab.half_inning,
+            ab.outs, ab.event, ab.description,
+            ab.home_score, ab.away_score,
+            ab.balls, ab.strikes,
+            ab.on_first, ab.on_second, ab.on_third,
+            JSON_AGG(
+                JSON_BUILD_OBJECT(
+                    'pitch_number', p.pitch_number,
+                    'pitch_type', p.pitch_type_code,
+                    'velo', ROUND(p.start_speed::numeric, 1),
+                    'call_code', p.call_code,
+                    'px', ROUND(p.px::numeric, 3),
+                    'pz', ROUND(p.pz::numeric, 3),
+                    'zone', p.zone,
+                    'x0', p.x0, 'y0', p.y0, 'z0', p.z0,
+                    'vx0', p.vx0, 'vy0', p.vy0, 'vz0', p.vz0,
+                    'ax', p.ax, 'ay', p.ay, 'az', p.az,
+                    'spin_rate', p.spin_rate,
+                    'pfx_x', p.pfx_x, 'pfx_z', p.pfx_z,
+                    'balls_before', p.balls_before,
+                    'strikes_before', p.strikes_before
+                ) ORDER BY p.pitch_number
+            ) FILTER (WHERE p.pitch_number IS NOT NULL) as pitches
+        FROM mlb.at_bats ab
+        LEFT JOIN mlb.pitches p ON p.game_pk = ab.game_pk
+            AND p.at_bat_index = ab.at_bat_index
+        WHERE ab.game_pk = :gp
+        GROUP BY ab.at_bat_index, ab.pitcher_id, ab.pitcher_name,
+                 ab.pitch_hand, ab.batter_id, ab.batter_name,
+                 ab.bat_side, ab.inning, ab.half_inning,
+                 ab.outs, ab.event, ab.description,
+                 ab.home_score, ab.away_score, ab.balls, ab.strikes,
+                 ab.on_first, ab.on_second, ab.on_third
+        ORDER BY ab.at_bat_index
+    """)
+    at_bats_rows = db.execute(abs_sql, {"gp": game_pk}).mappings().all()
+    at_bats = [dict(ab) for ab in at_bats_rows]
+
+    current_ab = at_bats[-1] if at_bats else None
+    current_pitcher_id = current_ab['pitcher_id'] if current_ab else None
+    current_batter_id = current_ab['batter_id'] if current_ab else None
+
+    # Overlay live runner/count state from GUMBO (most recent play)
+    if current_ab:
+        try:
+            gumbo_sql = text("""
+                SELECT
+                    (play -> 'matchup' -> 'postOnFirst') IS NOT NULL
+                        AND (play -> 'matchup' -> 'postOnFirst') != 'null'::jsonb as on_first,
+                    (play -> 'matchup' -> 'postOnSecond') IS NOT NULL
+                        AND (play -> 'matchup' -> 'postOnSecond') != 'null'::jsonb as on_second,
+                    (play -> 'matchup' -> 'postOnThird') IS NOT NULL
+                        AND (play -> 'matchup' -> 'postOnThird') != 'null'::jsonb as on_third,
+                    CAST(play -> 'count' ->> 'outs' AS int) as outs,
+                    CAST(play -> 'count' ->> 'balls' AS int) as balls,
+                    CAST(play -> 'count' ->> 'strikes' AS int) as strikes
+                FROM mlb.raw_events r,
+                jsonb_array_elements(r.data -> 'liveData' -> 'plays' -> 'allPlays') as play
+                WHERE r.game_pk = :gp
+                ORDER BY CAST(play -> 'about' ->> 'atBatIndex' AS int) DESC
+                LIMIT 1
+            """)
+            live = db.execute(gumbo_sql, {"gp": game_pk}).mappings().first()
+            if live:
+                current_ab['on_first'] = bool(live['on_first'])
+                current_ab['on_second'] = bool(live['on_second'])
+                current_ab['on_third'] = bool(live['on_third'])
+                current_ab['outs'] = int(live['outs'] or 0)
+                current_ab['balls'] = int(live['balls'] or 0)
+                current_ab['strikes'] = int(live['strikes'] or 0)
+                # Also update the last at_bat entry in the list
+                if at_bats:
+                    at_bats[-1].update(current_ab)
+        except Exception as _e:
+            pass  # Non-fatal; fall back to at_bats data
+
+    pitcher_today = None
+    if current_pitcher_id:
+        pt_sql = text("""
+            SELECT
+                COUNT(DISTINCT ab.at_bat_index) as batters_faced,
+                SUM(CASE WHEN p.call_code IS NOT NULL THEN 1 ELSE 0 END) as total_pitches,
+                SUM(CASE WHEN p.call_code IN ('C','S','W','T','F','X') THEN 1 ELSE 0 END) as strikes,
+                SUM(CASE WHEN p.call_code = 'B' THEN 1 ELSE 0 END) as balls,
+                SUM(CASE WHEN ab.event IN ('Strikeout','Strikeout - DP') THEN 1 ELSE 0 END) as k,
+                SUM(CASE WHEN ab.event IN ('Walk','Intent Walk') THEN 1 ELSE 0 END) as bb,
+                SUM(CASE WHEN ab.event = 'Home Run' THEN 1 ELSE 0 END) as hr,
+                MAX(ab.inning) as last_inning,
+                MAX(ab.inning) * 3 as outs_recorded
+            FROM mlb.at_bats ab
+            LEFT JOIN mlb.pitches p ON p.game_pk = ab.game_pk
+                AND p.at_bat_index = ab.at_bat_index
+            WHERE ab.game_pk = :gp AND ab.pitcher_id = :pid
+        """)
+        pitcher_today = dict(db.execute(pt_sql, {"gp": game_pk, "pid": current_pitcher_id}).mappings().first() or {})
+
+    batter_today = None
+    if current_batter_id:
+        bt_sql = text("""
+            SELECT
+                COUNT(*) as pa,
+                SUM(CASE WHEN event IN ('Single','Double','Triple','Home Run') THEN 1 ELSE 0 END) as hits,
+                SUM(CASE WHEN event = 'Double' THEN 1 ELSE 0 END) as doubles,
+                SUM(CASE WHEN event = 'Triple' THEN 1 ELSE 0 END) as triples,
+                SUM(CASE WHEN event = 'Home Run' THEN 1 ELSE 0 END) as hr,
+                SUM(CASE WHEN event IN ('Walk','Intent Walk') THEN 1 ELSE 0 END) as bb,
+                SUM(CASE WHEN event IN ('Strikeout','Strikeout - DP') THEN 1 ELSE 0 END) as k,
+                SUM(CASE WHEN event IN ('Single','Double','Triple','Home Run',
+                    'Groundout','Flyout','Lineout','Pop Out','Forceout',
+                    'Grounded Into DP','Double Play','Fielders Choice')
+                    THEN 1 ELSE 0 END) as ab
+            FROM mlb.at_bats
+            WHERE game_pk = :gp AND batter_id = :bid
+        """)
+        batter_today = dict(db.execute(bt_sql, {"gp": game_pk, "bid": current_batter_id}).mappings().first() or {})
+
+    pitch_mix = []
+    if current_pitcher_id:
+        mix_sql = text("""
+            WITH today AS (
+                SELECT p.pitch_type_code,
+                    COUNT(*) as total,
+                    ROUND(CAST(AVG(p.start_speed) AS numeric),1) as velo,
+                    ROUND(CAST(AVG(p.pfx_z) * 12 AS numeric),1) as ivb,
+                    ROUND(CAST(AVG(p.pfx_x) * 12 AS numeric),1) as hbreak,
+                    ROUND(CAST(AVG(CASE WHEN p.call_code IN ('S','W','T')
+                        THEN 1.0 ELSE 0.0 END)*100 AS numeric),1) as whiff_pct,
+                    SUM(CASE WHEN p.call_code IN ('C','S','W','T','F','X')
+                        THEN 1 ELSE 0 END) as strikes,
+                    SUM(CASE WHEN p.call_code = 'B' THEN 1 ELSE 0 END) as balls
+                FROM mlb.pitches p
+                JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
+                    AND ab.at_bat_index = p.at_bat_index
+                WHERE p.game_pk = :gp AND ab.pitcher_id = :pid
+                AND p.pitch_type_code IS NOT NULL
+                AND p.pfx_z IS NOT NULL AND p.pfx_x IS NOT NULL
+                GROUP BY p.pitch_type_code
+            ),
+            season AS (
+                SELECT pqs.pitch_type_code,
+                    SUM(pqs.pitches_thrown) as total,
+                    ROUND(CAST(AVG(pqs.avg_velo) AS numeric),1) as velo,
+                    ROUND(CAST(AVG(pqs.avg_ivb) AS numeric),1) as ivb,
+                    ROUND(CAST(AVG(pqs.avg_hmov) AS numeric),1) as hbreak,
+                    ROUND(CAST(AVG(pqs.whiff_rate)*100 AS numeric),1) as whiff_pct,
+                    MAX(gs.goose_plus) as goose_plus
+                FROM mlb.pitch_quality_scores pqs
+                LEFT JOIN mlb.goose_scores gs ON gs.pitcher_id = pqs.pitcher_id
+                    AND gs.pitch_type_code = pqs.pitch_type_code
+                    AND gs.season = 2026
+                WHERE pqs.pitcher_id = :pid
+                AND pqs.season = 2026 AND pqs.game_type = 'R'
+                GROUP BY pqs.pitch_type_code
+            )
+            SELECT
+                t.pitch_type_code,
+                t.total as today_total,
+                ROUND(CAST(t.total AS numeric) /
+                    NULLIF(SUM(t.total) OVER(), 0) * 100, 0) as today_usage_pct,
+                t.velo as today_velo,
+                t.ivb as today_ivb,
+                t.hbreak as today_hbreak,
+                t.whiff_pct as today_whiff,
+                t.strikes as today_strikes,
+                t.balls as today_balls,
+                s.total as season_total,
+                ROUND(CAST(s.total AS numeric) /
+                    NULLIF(SUM(s.total) OVER(), 0) * 100, 0) as season_usage_pct,
+                s.velo as season_velo,
+                s.ivb as season_ivb,
+                s.hbreak as season_hbreak,
+                s.whiff_pct as season_whiff,
+                s.goose_plus
+            FROM today t
+            LEFT JOIN season s ON s.pitch_type_code = t.pitch_type_code
+            ORDER BY t.total DESC
+        """)
+        pitch_mix = [dict(r) for r in db.execute(mix_sql, {"gp": game_pk, "pid": current_pitcher_id}).mappings().all()]
+
+    current_half = current_ab['half_inning'] if current_ab else 'top'
+    recent_batters = []
+    if current_ab:
+        rb_sql = text("""
+            SELECT DISTINCT ON (batter_id) batter_id, batter_name, bat_side, at_bat_index
+            FROM mlb.at_bats
+            WHERE game_pk = :gp AND half_inning = :half
+            ORDER BY batter_id, at_bat_index DESC
+        """)
+        recent_batters = [dict(r) for r in db.execute(rb_sql, {"gp": game_pk, "half": current_half}).mappings().all()]
+        recent_batters.sort(key=lambda r: r['at_bat_index'], reverse=True)
+        recent_batters = recent_batters[:5]
+
+    goose3 = None
+    if current_pitcher_id:
+        g3_sql = text("""
+            SELECT ROUND(goose3_plus::numeric,1) as goose3_plus,
+                   ROUND(avg_stuff_score::numeric,1) as stuff_score
+            FROM mlb.goose3_overall WHERE pitcher_id = :pid AND season = 2026
+        """)
+        row = db.execute(g3_sql, {"pid": current_pitcher_id}).mappings().first()
+        goose3 = dict(row) if row else None
+
+    juiced = None
+    if current_batter_id:
+        j_sql = text("""
+            SELECT ROUND((SUM(juiced_plus * pa) / NULLIF(SUM(pa), 0))::numeric, 1) as juiced_plus
+            FROM mlb.juiced_scores WHERE batter_id = :bid AND season = 2026 AND pa >= 3
+        """)
+        row = db.execute(j_sql, {"bid": current_batter_id}).mappings().first()
+        juiced = dict(row) if row else None
+
+    weather = None
+    w_row = db.execute(text("""
+        SELECT temperature_f, wind_speed_mph, wind_direction_deg,
+               weather_condition, combined_hr_modifier, venue_name
+        FROM mlb.game_weather WHERE game_pk = :gp
+    """), {"gp": game_pk}).mappings().first()
+    if w_row:
+        weather = dict(w_row)
+
+    return {
+        "game_pk": game_pk,
+        "game": game,
+        "at_bats": at_bats,
+        "current_ab": current_ab,
+        "pitcher_today": pitcher_today,
+        "batter_today": batter_today,
+        "pitch_mix_today": pitch_mix,
+        "goose3": goose3,
+        "juiced": juiced,
+        "weather": weather,
+        "recent_batters": recent_batters,
+    }
+
+
+@router.get("/game/{game_pk}/batter-splits/{batter_id}")
+def game_batter_splits(game_pk: int, batter_id: int,
+                        pitcher_id: int = None,
+                        outs: int = None,
+                        on_first: bool = False,
+                        on_second: bool = False,
+                        on_third: bool = False,
+                        db: Session = Depends(get_db)):
+    """Contextual splits for batter in current game state."""
+    from sqlalchemy import text
+
+    pitch_hand = 'R'
+    if pitcher_id:
+        row = db.execute(text("""
+            SELECT pitch_hand FROM mlb.at_bats
+            WHERE pitcher_id = :pid AND pitch_hand IS NOT NULL LIMIT 1
+        """), {"pid": pitcher_id}).scalar()
+        if row:
+            pitch_hand = row
+
+    mix = []
+    if pitcher_id:
+        mix_rows = db.execute(text("""
+            SELECT pitch_type_code,
+                   ROUND(AVG(start_speed)::numeric,1) as avg_velo,
+                   COUNT(*) as pitches
+            FROM mlb.pitches p
+            JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk AND ab.at_bat_index = p.at_bat_index
+            JOIN mlb.games g ON g.game_pk = p.game_pk
+            WHERE ab.pitcher_id = :pid AND g.season = 2026 AND g.game_type = 'R'
+            AND p.pitch_type_code IS NOT NULL
+            GROUP BY p.pitch_type_code
+            HAVING COUNT(*) >= 20
+            ORDER BY pitches DESC LIMIT 5
+        """), {"pid": pitcher_id}).mappings().all()
+        mix = list(mix_rows)
+
+    ops_vs_hand = db.execute(text("""
+        SELECT
+            ROUND(CAST(((AVG(CASE WHEN ab.event IN ('Single','Double','Triple','Home Run',
+                    'Walk','Intent Walk','Hit By Pitch')
+                    THEN 1.0 ELSE 0.0 END) / 0.320) +
+                   (AVG(CASE ab.event WHEN 'Single' THEN 1.0 WHEN 'Double' THEN 2.0
+                    WHEN 'Triple' THEN 3.0 WHEN 'Home Run' THEN 4.0
+                    ELSE 0.0 END) / 0.415) - 1) * 100 AS numeric), 0) as avg_index,
+            ROUND(CAST(AVG(CASE WHEN ab.event IN ('Single','Double','Triple','Home Run',
+                'Walk','Intent Walk','Hit By Pitch')
+                THEN 1.0 ELSE 0.0 END) AS numeric), 3) as obp,
+            ROUND(CAST(AVG(CASE ab.event WHEN 'Single' THEN 1.0 WHEN 'Double' THEN 2.0
+                WHEN 'Triple' THEN 3.0 WHEN 'Home Run' THEN 4.0
+                ELSE 0.0 END) AS numeric), 3) as slg,
+            COUNT(*) as pa
+        FROM mlb.at_bats ab
+        JOIN mlb.games g ON g.game_pk = ab.game_pk
+        WHERE ab.batter_id = :bid AND ab.pitch_hand = :hand
+        AND g.season = 2026 AND g.game_type = 'R'
+        AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+            'Caught Stealing 3B','Wild Pitch','Passed Ball')
+    """), {"bid": batter_id, "hand": pitch_hand}).mappings().first()
+
+    ops_by_pitch = {}
+    for pt_row in mix:
+        pt = pt_row['pitch_type_code']
+        result = db.execute(text("""
+            SELECT
+                ROUND(AVG(CASE WHEN ab.event = 'Home Run' THEN 4.0
+                    WHEN ab.event = 'Triple' THEN 3.0
+                    WHEN ab.event = 'Double' THEN 2.0
+                    WHEN ab.event = 'Single' THEN 1.0
+                    ELSE 0.0 END) * 100, 0) as slg_idx,
+                COUNT(DISTINCT ab.at_bat_index) as pa
+            FROM mlb.pitches p
+            JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk AND ab.at_bat_index = p.at_bat_index
+            JOIN mlb.games g ON g.game_pk = p.game_pk
+            WHERE ab.batter_id = :bid AND p.pitch_type_code = :pt
+            AND g.season = 2026 AND g.game_type = 'R'
+            AND p.pitch_number = (
+                SELECT MAX(p2.pitch_number) FROM mlb.pitches p2
+                WHERE p2.game_pk = p.game_pk AND p2.at_bat_index = p.at_bat_index
+            )
+        """), {"bid": batter_id, "pt": pt}).mappings().first()
+        if result and (result['pa'] or 0) >= 5:
+            ops_by_pitch[pt] = {"slg_idx": int(result['slg_idx'] or 100), "pa": int(result['pa'])}
+
+    juiced_by_pitch_rows = db.execute(text("""
+        SELECT pitch_type_code,
+               ROUND(AVG(juiced_plus)::numeric,1) as juiced_plus,
+               SUM(pa) as total_pa
+        FROM mlb.juiced_scores
+        WHERE batter_id = :bid AND season = 2026 AND pa >= 3
+        GROUP BY pitch_type_code
+    """), {"bid": batter_id}).mappings().all()
+    juiced_by_pitch = {r['pitch_type_code']: {
+        "juiced_plus": float(r['juiced_plus'] or 100),
+        "pa": int(r['total_pa'])
+    } for r in juiced_by_pitch_rows}
+
+    risp = db.execute(text("""
+        SELECT
+            ROUND(AVG(CASE WHEN event IN ('Single','Double','Triple','Home Run')
+                THEN 1.0 ELSE 0.0 END) * 100, 1) as hit_rate,
+            ROUND(AVG(CASE WHEN event IN ('Strikeout','Strikeout - DP')
+                THEN 1.0 ELSE 0.0 END) * 100, 1) as k_rate,
+            COUNT(*) as pa
+        FROM mlb.at_bats ab
+        JOIN mlb.games g ON g.game_pk = ab.game_pk
+        WHERE ab.batter_id = :bid AND g.season = 2026 AND g.game_type = 'R'
+        AND ab.runners_reconstructed = TRUE AND (ab.on_second OR ab.on_third)
+        AND ab.event NOT IN ('Runner Out','Caught Stealing 2B','Wild Pitch')
+    """), {"bid": batter_id}).mappings().first()
+
+    PNAMES = {
+        'FF':'Four-Seam FB','SI':'Sinker','SL':'Slider','CH':'Changeup',
+        'CU':'Curveball','FC':'Cutter','ST':'Sweeper','FS':'Splitter','KC':'Knuckle-Curve'
+    }
+    mix_codes = {r['pitch_type_code'] for r in mix}
+
+    ops_splits = []
+    if ops_vs_hand and ops_vs_hand['pa']:
+        ops_splits.append({
+            "label": f"Vs {'LHP' if pitch_hand == 'L' else 'RHP'}",
+            "value": int(ops_vs_hand['avg_index'] or 100),
+            "pa": int(ops_vs_hand['pa']),
+            "obp": float(ops_vs_hand.get('obp') or 0),
+            "slg": float(ops_vs_hand.get('slg') or 0),
+            "ops": float((ops_vs_hand.get('obp') or 0) +
+                         (ops_vs_hand.get('slg') or 0)),
+        })
+    for pt, data in ops_by_pitch.items():
+        ops_splits.append({
+            "label": f"Vs {PNAMES.get(pt, pt)}",
+            "pitch_type": pt,
+            "value": data['slg_idx'],
+            "pa": data['pa']
+        })
+    if risp and (risp['pa'] or 0) >= 10:
+        ops_splits.append({
+            "label": "RISP",
+            "value": int(float(risp["hit_rate"] or 0) / 0.26 * 100),
+            "pa": int(risp['pa'])
+        })
+
+    juiced_splits = []
+    juiced_splits.append({"label": f"Vs {'LHP' if pitch_hand == 'L' else 'RHP'}", "value": None, "pa": 0})
+    for pt, data in juiced_by_pitch.items():
+        if pt in mix_codes:
+            juiced_splits.append({
+                "label": f"Vs {PNAMES.get(pt, pt)}",
+                "pitch_type": pt,
+                "value": data['juiced_plus'],
+                "pa": data['pa']
+            })
+
+    game_state_split = None
+    if outs is not None:
+        is_risp = on_second or on_third
+        has_runners = on_first or on_second or on_third
+        state_label = "RISP" if is_risp else ("Runners On" if has_runners else "Bases Empty")
+        if is_risp:
+            state_filter = "AND (ab.on_second OR ab.on_third)"
+        elif has_runners:
+            state_filter = "AND (ab.on_first OR ab.on_second OR ab.on_third)"
+        else:
+            state_filter = "AND NOT ab.on_first AND NOT ab.on_second AND NOT ab.on_third"
+
+        gs_sql = text(f"""
+            SELECT
+                COUNT(*) as pa,
+                ROUND(AVG(CASE WHEN event IN ('Single','Double','Triple','Home Run')
+                    THEN 1.0 ELSE 0.0 END)::numeric, 3) as avg,
+                ROUND(AVG(CASE WHEN event IN ('Single','Double','Triple','Home Run',
+                    'Walk','Intent Walk') THEN 1.0 ELSE 0.0 END)::numeric, 3) as obp,
+                ROUND(AVG(CASE ab.event WHEN 'Single' THEN 1.0 WHEN 'Double' THEN 2.0
+                    WHEN 'Triple' THEN 3.0 WHEN 'Home Run' THEN 4.0
+                    ELSE 0.0 END)::numeric, 3) as slg,
+                ROUND(AVG(CASE WHEN event IN ('Strikeout','Strikeout - DP')
+                    THEN 1.0 ELSE 0.0 END)::numeric, 3) as k_rate,
+                ROUND(AVG(CASE WHEN event = 'Home Run'
+                    THEN 1.0 ELSE 0.0 END)::numeric, 3) as hr_rate
+            FROM mlb.at_bats ab
+            JOIN mlb.games g ON g.game_pk = ab.game_pk
+            WHERE ab.batter_id = :bid
+            AND g.season = 2026 AND g.game_type = 'R'
+            AND ab.runners_reconstructed = TRUE
+            AND ab.outs_before = :outs
+            {state_filter}
+            AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+                'Caught Stealing 3B','Wild Pitch','Passed Ball')
+        """)
+        gs_row = db.execute(gs_sql, {"bid": batter_id, "outs": outs}).mappings().first()
+        if gs_row and int(gs_row['pa'] or 0) >= 5:
+            game_state_split = {
+                "label": f"{state_label}, {outs} out{'s' if outs != 1 else ''}",
+                "pa": int(gs_row['pa']),
+                "avg": float(gs_row['avg'] or 0),
+                "obp": float(gs_row['obp'] or 0),
+                "slg": float(gs_row['slg'] or 0),
+                "ops": float((gs_row['obp'] or 0) + (gs_row['slg'] or 0)),
+                "k_rate": float(gs_row['k_rate'] or 0),
+                "hr_rate": float(gs_row['hr_rate'] or 0),
+            }
+
+    return {
+        "batter_id": batter_id,
+        "pitch_hand": pitch_hand,
+        "ops_splits": ops_splits[:6],
+        "juiced_splits": juiced_splits[:6],
+        "risp_pa": int(risp['pa']) if risp else 0,
+        "game_state_split": game_state_split,
+    }
+
+
+@router.get("/lineup-stats/batters")
+def lineup_batter_stats(ids: str, season: int = 2026, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    batter_ids = [int(i) for i in ids.split(',') if i.strip().isdigit()]
+    if not batter_ids:
+        return {}
+    rows = db.execute(text("""
+        SELECT
+            bb.player_id,
+            ROUND(SUM(bb.hits)::numeric / NULLIF(SUM(bb.at_bats), 0), 3) as avg,
+            ROUND(
+                (SUM(bb.hits) + SUM(bb.walks))::numeric /
+                NULLIF(SUM(bb.at_bats) + SUM(bb.walks), 0), 3) as obp,
+            ROUND(SUM(bb.total_bases)::numeric / NULLIF(SUM(bb.at_bats), 0), 3) as slg,
+            ROUND(
+                (SUM(bb.hits) + SUM(bb.walks))::numeric /
+                NULLIF(SUM(bb.at_bats) + SUM(bb.walks), 0) +
+                SUM(bb.total_bases)::numeric / NULLIF(SUM(bb.at_bats), 0), 3) as ops,
+            SUM(bb.home_runs) as hr,
+            SUM(bb.strikeouts) as k,
+            SUM(bb.walks) as bb,
+            ROUND(j2.juiced2_plus::numeric, 1) as juiced2_plus
+        FROM mlb.boxscore_batting bb
+        JOIN mlb.games g ON g.game_pk = bb.game_pk
+        LEFT JOIN mlb.juiced2_scores j2
+            ON j2.batter_id = bb.player_id AND j2.season = :season
+        WHERE bb.player_id = ANY(:ids)
+          AND g.season = :season AND g.game_type = 'R'
+        GROUP BY bb.player_id, j2.juiced2_plus
+    """), {"ids": batter_ids, "season": season}).mappings().all()
+    return {r['player_id']: dict(r) for r in rows}
+
+
+@router.get("/lineup-stats/pitchers")
+def lineup_pitcher_stats(ids: str, season: int = 2026, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    pitcher_ids = [int(i) for i in ids.split(',') if i.strip().isdigit()]
+    if not pitcher_ids:
+        return {}
+    rows = db.execute(text("""
+        SELECT
+            bp.player_id,
+            ROUND(SUM(bp.innings_pitched)::numeric, 1) as ip,
+            SUM(bp.strikeouts) as k,
+            SUM(bp.walks) as bb,
+            SUM(bp.hits) as hits_allowed,
+            SUM(bp.earned_runs) as er,
+            ROUND(
+                SUM(bp.earned_runs)::numeric * 9 /
+                NULLIF(SUM(bp.innings_pitched)::numeric, 0), 2) as era,
+            ROUND(g3.goose3_plus::numeric, 1) as goose3_plus
+        FROM mlb.boxscore_pitching bp
+        JOIN mlb.games g ON g.game_pk = bp.game_pk
+        LEFT JOIN mlb.goose3_overall g3
+            ON g3.pitcher_id = bp.player_id AND g3.season = :season
+        WHERE bp.player_id = ANY(:ids)
+          AND g.season = :season AND g.game_type = 'R'
+        GROUP BY bp.player_id, g3.goose3_plus
+    """), {"ids": pitcher_ids, "season": season}).mappings().all()
+    return {r['player_id']: dict(r) for r in rows}
+
+
+# ── CONTEXT SPLITS & WORKLOAD ────────────────────────────────────────────────
+
+@router.get("/pitcher/{pitcher_id}/context-splits")
+def pitcher_context_splits(pitcher_id: int, season: int = 2026,
+                            db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT split_type, pa, k_pct, bb_pct, hr_pct,
+               avg_against, obp_against, slg_against, ops_against
+        FROM mlb.pitcher_splits
+        WHERE pitcher_id = :pid AND season = :season
+        ORDER BY split_type
+    """), {"pid": pitcher_id, "season": season}).mappings().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No splits found")
+    return {r['split_type']: {k: (float(v) if v is not None else None)
+                               for k, v in r.items() if k != 'split_type'}
+            for r in rows}
+
+
+@router.get("/batter/{batter_id}/context-splits")
+def batter_context_splits(batter_id: int, season: int = 2026,
+                           db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT split_type, pa, k_pct, bb_pct, hr_pct,
+               avg_for, obp_for, slg_for, ops_for
+        FROM mlb.batter_splits
+        WHERE batter_id = :bid AND season = :season
+        ORDER BY split_type
+    """), {"bid": batter_id, "season": season}).mappings().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No splits found")
+    return {r['split_type']: {k: (float(v) if v is not None else None)
+                               for k, v in r.items() if k != 'split_type'}
+            for r in rows}
+
+
+@router.get("/player/{player_id}/workload")
+def player_workload(player_id: int, player_type: str = "pitcher",
+                    db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT calc_date, player_type, load_7d, load_28d, acwr,
+               games_7d, games_28d, total_load_7d
+        FROM mlb.player_workload
+        WHERE player_id = :pid AND player_type = :ptype
+        ORDER BY calc_date DESC
+        LIMIT 28
+    """), {"pid": player_id, "ptype": player_type}).mappings().all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No workload data found")
+
+    latest = dict(rows[0])
+    acwr = float(latest.get('acwr') or 0)
+    acwr_flag = 'red' if acwr > 1.5 else ('yellow' if acwr > 1.2 else 'green')
+
+    return {
+        'player_id': player_id,
+        'player_type': player_type,
+        'acwr_flag': acwr_flag,
+        'latest': {k: (float(v) if hasattr(v, '__float__') else str(v) if v is not None else None)
+                   for k, v in latest.items()},
+        'history': [{k: (float(v) if hasattr(v, '__float__') else str(v) if v is not None else None)
+                     for k, v in dict(r).items()} for r in rows],
+    }
+
+
+@router.get("/matchup/{pitcher_id}/vs/{batter_id}")
+def matchup_h2h(pitcher_id: int, batter_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # Career aggregate across all stored seasons
+    agg = db.execute(text("""
+        SELECT
+            SUM(pa) AS pa, SUM(k) AS k, SUM(bb) AS bb,
+            SUM(hr) AS hr, SUM(hits) AS hits,
+            SUM(total_bases) AS total_bases,
+            ROUND(SUM(k)::NUMERIC  / NULLIF(SUM(pa), 0) * 100, 1) AS k_pct,
+            ROUND(SUM(hr)::NUMERIC / NULLIF(SUM(pa), 0) * 100, 1) AS hr_pct,
+            ROUND(SUM(hits)::NUMERIC / NULLIF(SUM(pa) - SUM(bb), 0), 3) AS avg,
+            ROUND(SUM(total_bases)::NUMERIC / NULLIF(SUM(pa) - SUM(bb), 0), 3) AS slg,
+            ROUND(
+                (SUM(k)::NUMERIC / NULLIF(SUM(pa), 0) * 100)
+                * (SUM(pa)::NUMERIC / (SUM(pa) + 20))
+                + 22.0 * (20.0 / (SUM(pa) + 20)), 2) AS k_pct_reg,
+            ROUND(
+                (SUM(hr)::NUMERIC / NULLIF(SUM(pa), 0) * 100)
+                * (SUM(pa)::NUMERIC / (SUM(pa) + 20))
+                + 3.5 * (20.0 / (SUM(pa) + 20)), 2) AS hr_pct_reg
+        FROM mlb.matchup_history
+        WHERE pitcher_id = :pid AND batter_id = :bid
+    """), {"pid": pitcher_id, "bid": batter_id}).mappings().first()
+
+    # Per-season breakdown
+    seasons = db.execute(text("""
+        SELECT season, pa, k, bb, hr, hits, total_bases,
+               k_pct_raw, hr_pct_raw, k_pct_reg, hr_pct_reg
+        FROM mlb.matchup_history
+        WHERE pitcher_id = :pid AND batter_id = :bid
+        ORDER BY season DESC
+    """), {"pid": pitcher_id, "bid": batter_id}).mappings().all()
+
+    def _fmt(row):
+        return {k: (float(v) if v is not None else None) for k, v in dict(row).items()}
+
+    return {
+        'pitcher_id': pitcher_id,
+        'batter_id': batter_id,
+        'career': _fmt(agg) if agg and agg['pa'] else None,
+        'by_season': [_fmt(r) for r in seasons],
+    }
+
+
+# ── MODEL SCORES ──────────────────────────────────────────────────────────────
+
+@router.get("/model-scores")
+def get_model_scores(
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+):
+    """
+    Returns daily model accuracy scores for the last N days plus rolling
+    7-day and season-to-date averages for each metric.
+    """
+    from sqlalchemy import text
+    from datetime import date, timedelta
+
+    today = date.today()
+    start = today - timedelta(days=days)
+    season_start = date(today.year, 3, 1)
+
+    rows = db.execute(text("""
+        SELECT
+            ms.score_date,
+            ms.player_type,
+            ms.metric,
+            ms.n_players,
+            ms.mae,
+            ms.rmse,
+            ms.mean_proj,
+            ms.mean_actual,
+            ms.bias,
+            ms.within_1,
+            ms.within_2,
+            -- 7-day rolling avg for this metric
+            ROUND(AVG(ms.mae) OVER (
+                PARTITION BY ms.player_type, ms.metric
+                ORDER BY ms.score_date
+                ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            )::numeric, 4) AS mae_7d,
+            ROUND(AVG(ms.bias) OVER (
+                PARTITION BY ms.player_type, ms.metric
+                ORDER BY ms.score_date
+                ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+            )::numeric, 4) AS bias_7d
+        FROM mlb.model_scores ms
+        WHERE ms.score_date >= :start
+        ORDER BY ms.score_date DESC, ms.player_type, ms.metric
+    """), {"start": start}).mappings().all()
+
+    # Season averages (separate query)
+    season_avgs = db.execute(text("""
+        SELECT
+            player_type,
+            metric,
+            COUNT(*) AS n_days,
+            ROUND(AVG(mae)::numeric, 4)  AS mae_season,
+            ROUND(AVG(bias)::numeric, 4) AS bias_season
+        FROM mlb.model_scores
+        WHERE score_date >= :s AND score_date <= :e
+        GROUP BY player_type, metric
+    """), {"s": season_start, "e": today}).mappings().all()
+
+    season_map = {(r['player_type'], r['metric']): dict(r) for r in season_avgs}
+
+    def _row(r):
+        d = {k: (float(v) if v is not None else None) for k, v in dict(r).items()
+             if k not in ('score_date', 'player_type', 'metric')}
+        d['score_date'] = str(r['score_date'])
+        d['player_type'] = r['player_type']
+        d['metric'] = r['metric']
+        sk = (r['player_type'], r['metric'])
+        if sk in season_map:
+            d['mae_season'] = season_map[sk]['mae_season']
+            d['bias_season'] = season_map[sk]['bias_season']
+            d['n_days_season'] = season_map[sk]['n_days']
+        return d
+
+    return {
+        'days': days,
+        'start_date': str(start),
+        'rows': [_row(r) for r in rows],
+        'season_averages': [
+            {**{k: (float(v) if v is not None else None)
+                for k, v in s.items() if k not in ('player_type', 'metric')},
+             'player_type': s['player_type'],
+             'metric': s['metric']}
+            for s in season_avgs
+        ],
     }

@@ -163,13 +163,13 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
 .tbl .col-group { background:var(--gray-100); }
 .tbl .col-group th { font-size:10px; color:var(--gray-600); text-align:center; padding:5px 12px; border-bottom:1px solid var(--border); }
 
-/* Goose+ cell coloring */
-.bapv-elite { color:var(--green); font-weight:700; }
-.bapv-great { color:var(--score-great); font-weight:700; }
-.bapv-above { color:var(--score-above); font-weight:600; }
-.bapv-avg { color:var(--score-avg); }
-.bapv-below { color:var(--score-below); }
-.bapv-poor { color:var(--red); }
+/* Score cell coloring */
+.score-elite { color:var(--green); font-weight:700; }
+.score-great { color:var(--score-great); font-weight:700; }
+.score-above { color:var(--score-above); font-weight:600; }
+.score-avg   { color:var(--score-avg); }
+.score-below { color:var(--score-below); }
+.score-poor  { color:var(--red); }
 
 /* CONTROLS */
 .controls-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
@@ -338,6 +338,11 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
     <a class="bubble active">MLB</a>
     <a class="bubble" href="/dashboard">NASCAR</a>
     <a class="bubble" href="/f1-dashboard">F1</a>
+    <a href="/" target="_blank"
+       style="display:inline-block;padding:6px 16px;border-radius:20px;font-size:13px;
+              font-weight:700;background:#1a3a5c;color:white;text-decoration:none;
+              font-family:'Courier New',monospace;letter-spacing:0.05em;
+              border:2px solid #1a3a5c">📰 BRIEF</a>
   </div>
   <div class="nav-right">
     <span class="nav-clock" id="nav-clock"></span>
@@ -375,10 +380,34 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
       <a class="left-nav-item" id="nav-leaderboard" onclick="showSection('leaderboard')">
         <span class="left-nav-icon">📊</span> Leaderboard
       </a>
+      <a class="left-nav-item" id="nav-games" onclick="showSection('games')">
+        <span class="left-nav-icon">⚾</span> Today's Games
+      </a>
+      <a class="left-nav-item" id="nav-metrics" onclick="showSection('metrics')">
+        <span class="left-nav-icon">📐</span> Metrics
+      </a>
+      <a class="left-nav-item" id="nav-model-scores" onclick="showSection('model-scores')">
+        <span class="left-nav-icon">🎯</span> Model Scores
+      </a>
     </div>
   </aside>
 
   <main class="content">
+
+    <!-- TODAY'S GAMES PANEL -->
+    <div class="panel" id="panel-games">
+      <div class="page-header">
+        <div class="page-eyebrow">Simulation Projections</div>
+        <div class="page-title">Today's Games</div>
+        <div class="page-desc">Per-game matchup projections — starter K totals, top batter TB projections, model scores.</div>
+      </div>
+      <div id="games-content">
+        <div class="state-box">
+          <div class="spinner"></div>
+          <div class="state-text">Loading projections...</div>
+        </div>
+      </div>
+    </div>
 
     <!-- LEADERBOARD PANEL -->
     <div class="panel" id="panel-leaderboard">
@@ -434,8 +463,10 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
                 <th style="width:36px">#</th>
                 <th onclick="sortLB('pitcher_name')">Pitcher</th>
                 <th onclick="sortLB('pitch_type')">Type</th>
-                <th class="num" onclick="sortLB('season_bapv_plus')">Goose+</th>
-                <th class="num" onclick="sortLB('goose2_plus')">G2+</th>
+                <th class="num" onclick="sortLB('goose3_plus')">Goose+3</th>
+                <th class="num" onclick="sortLB('pk_plus')">pK+</th>
+                <th class="num" onclick="sortLB('phr_plus')">pHR+</th>
+                <th class="num" onclick="sortLB('stuff_score')">Stuff</th>
                 <th class="num" onclick="sortLB('total_pitches')">Pitches</th>
                 <th class="num" onclick="sortLB('games')">G</th>
                 <th class="num" onclick="sortLB('avg_velo')">Velo</th>
@@ -444,7 +475,7 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
               </tr>
             </thead>
             <tbody id="lb-body">
-              <tr><td colspan="9"><div class="state-box"><div class="spinner"></div><div class="state-text">Loading...</div></div></td></tr>
+              <tr><td colspan="12"><div class="state-box"><div class="spinner"></div><div class="state-text">Loading...</div></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -610,35 +641,28 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
     </div>
 
     <div class="panel" id="panel-matchup">
-      <div class="page-header">
-        <div class="page-eyebrow">Pre-Game Analysis</div>
-        <div class="page-title">Game Companion</div>
-        <div class="page-desc">Project strikeouts and total bases based on pitcher arsenal quality vs batter tendencies.</div>
-      </div>
-
-      <div style="margin-bottom:20px">
-        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gray-400);margin-bottom:8px">Select Game</div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <select id="matchup-game-select" class="game-select" onchange="onMatchupGameSelect(this.value)">
-            <option value="">Loading games...</option>
-          </select>
-          <button class="btn" onclick="loadMatchupGames()">Refresh</button>
+      <div style="margin-bottom:16px">
+        <div style="font-family:'Times New Roman',serif;font-size:28px;
+                    font-weight:700;color:#1a3a5c;margin-bottom:4px">
+          Game <em>Companion</em>
+        </div>
+        <div style="font-size:13px;color:#666">
+          Live game analysis — select a game to begin
         </div>
       </div>
 
-      <div id="matchup-pitcher-section" style="display:none;margin-bottom:20px">
-        <div style="font-family:var(--font-mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--gray-400);margin-bottom:8px">Select Pitcher</div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button class="btn" id="matchup-away-btn" onclick="loadMatchupPitcherFromGame('away')">Away Pitcher</button>
-          <button class="btn" id="matchup-home-btn" onclick="loadMatchupPitcherFromGame('home')">Home Pitcher</button>
-          <select id="matchup-pitcher-select" class="game-select" style="display:none;max-width:260px"></select>
-          <button class="btn primary" id="matchup-run-btn" style="display:none" onclick="runMatchupAnalysis()">Analyze →</button>
-        </div>
+      <!-- Game selector -->
+      <div style="margin-bottom:16px" id="gc-game-selector">
+        <div id="gc-game-pills" style="display:flex;flex-wrap:wrap;gap:6px"></div>
       </div>
 
-      <div id="matchup-result-section"></div>
+      <!-- Main content -->
+      <div id="gc-content">
+        <div style="text-align:center;padding:40px;color:#888;font-size:13px">
+          Select a game above to load the Game Companion
+        </div>
+      </div>
     </div>
-
     <!-- HITTER PANEL -->
     <div class="panel" id="panel-hitter">
       <div style="margin-bottom:24px">
@@ -662,10 +686,28 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
       </div>
     </div>
 
+    <!-- METRICS PANEL -->
+    <div class="panel" id="panel-metrics">
+      <div style="max-width:800px" id="metrics-content"></div>
+    </div>
+
+    <!-- MODEL SCORES PANEL -->
+    <div class="panel" id="panel-model-scores">
+      <div class="page-header">
+        <div class="page-eyebrow">Daily &amp; Season Accuracy</div>
+        <div class="page-title">Model Scores</div>
+        <div class="page-desc">MAE, RMSE, and bias for pitchers (K, ER, IP) and batters (TB, K, HR) vs. actuals.</div>
+      </div>
+      <div id="model-scores-content">
+        <div style="color:#888;font-size:13px;padding:20px 0">Loading...</div>
+      </div>
+    </div>
+
   </main>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <script>
 const API = window.location.origin;
 const PNAMES = {FF:'Four-Seam',SI:'Sinker',SL:'Slider',CH:'Changeup',FC:'Cutter',ST:'Sweeper',CU:'Curveball',FS:'Splitter',KC:'Knuckle Curve'};
@@ -674,15 +716,38 @@ const PITCH_COLORS = {
   FC:'#8430ce',ST:'#00897b',CU:'#3949ab',FS:'#00acc1',KC:'#546e7a'
 };
 
-let lbData=[], lbType='ALL', lbMin=200, lbSort='season_bapv_plus', lbDir=-1;
+let lbData=[], lbType='ALL', lbMin=200, lbSort='goose3_plus', lbDir=-1;
 let matchupGamePk=null, matchupPitcherId=null, matchupLineupData=null;
 let matchupIsLive=false, matchupAwayProbId=null, matchupHomeProbId=null;
+
+// ── GAME COMPANION STATE ──────────────────────────────────────────────────────
+let gcGamePk = null;
+let gcData = null;
+let gcSelectedAbIndex = null;
+let gcScene = null, gcCamera = null, gcRenderer = null, gcAnimFrame = null, gcControls = null;
+
+const GC_PNAMES = {
+  FF:'Four-Seam FB', SI:'Sinker', SL:'Slider', CH:'Changeup',
+  CU:'Curveball', FC:'Cutter', ST:'Sweeper', FS:'Splitter',
+  KC:'Knuckle-Curve', KN:'Knuckleball'
+};
+const GC_CALLS = {
+  'B':'Ball','C':'Called Strike','S':'Swinging Strike',
+  'F':'Foul','X':'In Play','T':'Foul Tip','W':'Swinging Strike (Blocked)',
+  'H':'Hit By Pitch','I':'Intentional Ball','*B':'Automatic Ball'
+};
+const GC_CALL_COLORS = {
+  'B':'#2e7d32','I':'#2e7d32','*B':'#2e7d32','H':'#1565c0',
+  'C':'#b71c1c','S':'#b71c1c','T':'#b71c1c','W':'#b71c1c',
+  'F':'#e65100','X':'#1a3a5c'
+};
 // ── MATCHUP ENGINE STATE ──────────────────────────────────────────────────────
 let mePitcherId = null, mePitcherName = '';
 let meBatterId = null, meBatterName = '';
 let meOuts = 0;
 let meRunners = {first: false, second: false, third: false};
 let meCount = {balls: 0, strikes: 0};
+let meGamePk = null;
 
 let gooseBucketLabels = {};
 async function loadGooseBucketLabels() {
@@ -699,7 +764,95 @@ document.addEventListener('DOMContentLoaded', () => {
   loadTicker(); setInterval(loadTicker, 60000);
   loadMatchupGames();
   initCountGrid();
+  handleHashNavigation();
 });
+
+function handleHashNavigation() {
+  const hash = window.location.hash;
+  if (!hash) return;
+  const pitcherMatch = hash.match(/^#pitcher\/(\d+)$/);
+  if (pitcherMatch) {
+    setTimeout(() => loadProfile(parseInt(pitcherMatch[1]), ''), 100);
+    return;
+  }
+  const hitterMatch = hash.match(/^#hitter\/(\d+)$/);
+  if (hitterMatch) {
+    setTimeout(() => { showSection('hitter'); loadHitterProfile(parseInt(hitterMatch[1]), ''); }, 100);
+  }
+}
+window.addEventListener('hashchange', handleHashNavigation);
+
+function metricsContent() {
+  const row = (model, k, hr, slg, ops, i) =>
+    `<tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e0e0e0">
+      <td style="padding:5px 10px;font-weight:700">${model}</td>
+      <td style="padding:5px 10px;text-align:right">${k}</td>
+      <td style="padding:5px 10px;text-align:right">${hr}</td>
+      <td style="padding:5px 10px;text-align:right">${slg}</td>
+      <td style="padding:5px 10px;text-align:right">${ops}</td>
+    </tr>`;
+  const tableData = [
+    ['pK+','+0.560','−0.183','—','—'],
+    ['pHR+','−0.008','−0.357','−0.311','—'],
+    ['Stuff Score','+0.358','−0.026','—','—'],
+    ['Goose+3','+0.336','−0.066','—','—'],
+    ['Juiced+2','—','+0.483','+0.558','+0.526'],
+    ['Juiced+1','—','+0.301','+0.362','—'],
+    ['Raw April Stats','+0.407','+0.228','+0.130','+0.094'],
+  ];
+  const sectionHdr = t => `<div style="font-size:18px;font-weight:700;color:#1a3a5c;border-bottom:2px solid #1a3a5c;padding-bottom:6px;margin:24px 0 16px;font-family:'Times New Roman',serif">${t}</div>`;
+  const metric = (name, desc, formula, validation) => `
+    <div style="margin-bottom:20px">
+      <div style="font-size:15px;font-weight:700;margin-bottom:6px">${name}</div>
+      <div style="font-size:13px;color:#333;line-height:1.7;margin-bottom:8px">${desc}</div>
+      <div style="font-size:12px;background:#f5f5f5;padding:10px;border-radius:4px;font-family:'Courier New',monospace;margin-bottom:8px;white-space:pre-wrap">${formula}</div>
+      <div style="font-size:12px;color:#555"><strong>Validation:</strong> ${validation}</div>
+    </div>`;
+  return `
+    <div style="font-family:'Times New Roman',serif;font-size:28px;font-weight:700;color:#1a3a5c;margin-bottom:4px">Metrics <em>Appendix</em></div>
+    <div style="font-size:13px;color:#666;margin-bottom:24px">Definitions, methodologies, and out-of-sample validation results</div>
+    ${sectionHdr('Pitcher Quality Models')}
+    ${metric('pK+ — Pitcher Strikeout Quality',
+      'Measures a pitcher\'s ability to generate strikeouts relative to league average for that pitch type and platoon matchup. Uses batter-quality-weighted whiff rate.',
+      'pK+ = whiff_idx(29%) + csw_idx(27%) + contact_idx(27%) + chase_idx(17%)\n100 = league average · Higher = better strikeout pitcher',
+      'K rate r=+0.560 out-of-sample (April→May 2026). Outperforms raw April K rate (r=+0.407).')}
+    ${metric('pHR+ — Contact Suppression Quality',
+      'Measures a pitcher\'s ability to suppress hard contact and home runs. Primarily driven by SLG allowed vs league average per pitch type.',
+      'pHR+ = slg_idx(87%) + hard_hit_idx(13%)\n100 = league average · Higher = better contact suppression',
+      'HR rate r=−0.357, SLG against r=−0.311 out-of-sample. Best HR suppression predictor across all models.')}
+    ${metric('Stuff Score',
+      'Physics-based pitch difficulty model. Measures how hard a pitch should be to hit based on physical characteristics, location, and tunneling relative to the pitcher\'s fastball.',
+      'Stuff Score = weighted_whiff(45%) + physical(35%) + location(15%) + tunnel(5%)\nPhysical = velo + IVB + HBreak + spin (empirically weighted per pitch type)\nLocation = zone value vs league avg for that pitch type\nTunnel = movement divergence from pitcher\'s fastball',
+      'K rate r=+0.358 out-of-sample. Best use: scouting tool and Bayesian prior for Goose+3.')}
+    ${metric('Goose+3 — Unified Pitcher Display Score',
+      'Composite display score blending Stuff Score (physics prior) with observed outcomes (pK+ and pHR+). Uses Bayesian updating — early in the season Stuff Score dominates; as sample grows, outcomes take over.',
+      'outcomes_weight = min(1.0, pitches/300) × 0.80\nGoose+3 = Stuff × (1 − outcomes_weight) + avg(pK+, pHR+) × outcomes_weight\nAt 300+ pitches: ~20% Stuff / 80% outcomes',
+      'Combined K+HR rate correlation r=+0.336 out-of-sample.')}
+    ${sectionHdr('Batter Quality Models')}
+    ${metric('Juiced+2 — Batter Quality Score',
+      'Measures batter offensive quality adjusted for the quality of pitchers faced. A batter who slugs .500 against elite pitchers scores much higher than one who slugs .500 against weak opposition.',
+      'Juiced+2 = quality_adj(40%) + slg_idx(28%) + ops_idx(22%) + hard_hit(10%)\nquality_adj = actual SLG / expected SLG given avg pitcher quality faced\n100 = league average batter of same handedness',
+      'SLG r=+0.558, HR rate r=+0.483 out-of-sample. 3–4× better than raw stat persistence. Quality adjustment alone r=+0.480.')}
+    ${sectionHdr('Simulation Engine')}
+    ${metric('Monte Carlo PA Simulation',
+      'Each plate appearance is simulated pitch-by-pitch using the pitcher\'s count-specific pitch mix.',
+      '1. Count mix (pitcher-specific by balls-strikes, min 15 pitches)\n2. pK+ → whiff multiplier per pitch type\n3. pHR+ → contact/HR multiplier per pitch type\n4. Juiced+2 → batter contact and HR adjustment\n5. Game state splits (base-out state, regression K=30)\n6. Weather → HR modifier (temperature + wind vs CF direction)\nDefault: 1,000 simulations per matchup',
+      'Projections run each morning ~10:30am ET after lineups post.')}
+    ${sectionHdr('Out-of-Sample Validation (April → May 2026)')}
+    <table style="width:100%;border-collapse:collapse;font-size:12px;font-family:'Courier New',monospace">
+      <thead><tr style="background:#1a1a1a;color:white">
+        <th style="padding:6px 10px;text-align:left">Model</th>
+        <th style="padding:6px 10px;text-align:right">K Rate</th>
+        <th style="padding:6px 10px;text-align:right">HR Rate</th>
+        <th style="padding:6px 10px;text-align:right">SLG</th>
+        <th style="padding:6px 10px;text-align:right">OPS</th>
+      </tr></thead>
+      <tbody>${tableData.map((r,i) => row(...r, i)).join('')}</tbody>
+    </table>
+    <div style="font-size:11px;color:#888;margin-top:6px">
+      n=224 pitchers / n=268 batters with ≥50 April PA and ≥20 May PA. Higher absolute value = stronger predictor.
+    </div>`;
+}
 
 function tick() {
   document.getElementById('nav-clock').textContent =
@@ -712,6 +865,401 @@ function showSection(name) {
   document.querySelectorAll('.left-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('panel-'+name)?.classList.add('active');
   document.getElementById('nav-'+name)?.classList.add('active');
+  if (name === 'matchup') initGameCompanion();
+  if (name === 'games') loadTodaysGames();
+  if (name === 'metrics') {
+    const el = document.getElementById('metrics-content');
+    if (el && !el.innerHTML) el.innerHTML = metricsContent();
+  }
+  if (name === 'model-scores') loadModelScores();
+}
+
+// ── TODAY'S GAMES ──────────────────────────────────────────────────────────
+function todayStr() {
+  return new Date().toISOString().split('T')[0];
+}
+
+let _gamesLoaded = false;
+
+async function loadTodaysGames() {
+  if (_gamesLoaded) return;
+  const el = document.getElementById('games-content');
+  if (!el) return;
+
+  try {
+    const [pitchRes, batRes, schedRes] = await Promise.all([
+      fetch(`${API}/mlb/leaderboard/daily-projections?date=${todayStr()}`),
+      fetch(`${API}/mlb/leaderboard/daily-batter-projections?snapshot_date=${todayStr()}`),
+      fetch(`${API}/mlb/schedule/today`),
+    ]);
+
+    const pitchData = pitchRes.ok ? await pitchRes.json() : {};
+    const batData   = batRes.ok   ? await batRes.json()   : {};
+    const schedData = schedRes.ok ? await schedRes.json() : {};
+
+    const pitchers = pitchData.projections || [];
+    const batters  = batData.projections   || [];
+    const games    = schedData.games       || [];
+
+    if (!pitchers.length) {
+      el.innerHTML = `<div style="color:#888;padding:20px;font-size:13px">No projections yet for today. Check back after 10:30am ET when lineups are posted.</div>`;
+      return;
+    }
+
+    const battersByGame = {};
+    batters.forEach(b => {
+      if (!battersByGame[b.game_pk]) battersByGame[b.game_pk] = [];
+      battersByGame[b.game_pk].push(b);
+    });
+
+    const pitchersByGame = {};
+    pitchers.forEach(p => {
+      if (!pitchersByGame[p.game_pk]) pitchersByGame[p.game_pk] = [];
+      pitchersByGame[p.game_pk].push(p);
+    });
+
+    const allGamePks = [...new Set([
+      ...Object.keys(pitchersByGame),
+      ...Object.keys(battersByGame)
+    ])].map(Number).sort();
+
+    const cards = allGamePks.map(gamePk => {
+      const gamePitchers = pitchersByGame[gamePk] || [];
+      const gameBatters  = battersByGame[gamePk]  || [];
+
+      const gameInfo   = games.find(g => g.game_pk === gamePk);
+      const homeAbbrev = gameInfo?.home_abbrev || '???';
+      const awayAbbrev = gameInfo?.away_abbrev || '???';
+      const gameStatus = gameInfo?.status || '';
+
+      const topBatters = [...gameBatters]
+        .sort((a, b) => (b.proj_tb ?? (b.proj_slg * 3.5) ?? 0) -
+                        (a.proj_tb ?? (a.proj_slg * 3.5) ?? 0))
+        .slice(0, 6);
+
+      const pitcherRows = gamePitchers.map(p => {
+        const pkColor = scoreColor(p.pk_plus || 100);
+        const g3Color = scoreColor(p.goose3_plus || 100);
+        return `
+        <tr style="border-bottom:1px solid #f0f0f0">
+          <td style="padding:6px 10px;font-weight:600;font-size:13px">
+            ${p.pitcher_name}
+            <span style="font-size:10px;color:#888;margin-left:4px">${p.pitcher_hand || '?'}HP</span>
+          </td>
+          <td style="padding:6px 10px;text-align:right;font-family:Courier New;font-weight:700;font-size:14px">${p.proj_ks_6inn?.toFixed(1) || '—'}</td>
+          <td style="padding:6px 10px;text-align:right;font-size:12px">${p.proj_k_pct?.toFixed(1) || '—'}%</td>
+          <td style="padding:6px 10px;text-align:right;font-size:12px">${p.proj_hr_pct?.toFixed(1) || '—'}%</td>
+          <td style="padding:6px 10px;text-align:right;font-size:12px;font-weight:700;color:${pkColor}">${p.pk_plus?.toFixed(1) || '—'}</td>
+          <td style="padding:6px 10px;text-align:right;font-size:12px;font-weight:700;color:${g3Color}">${p.goose3_plus?.toFixed(1) || '—'}</td>
+        </tr>`;
+      }).join('');
+
+      const batterRows = topBatters.map(b => {
+        const tb = b.proj_tb ?? (b.proj_slg * 3.5);
+        const j2Color = scoreColor(b.juiced_plus_overall || 100);
+        const tbColor = tb >= 1.5 ? '#1b5e20' : tb >= 1.2 ? '#1a3a5c' : '#555';
+        return `
+        <tr style="border-bottom:1px solid #f0f0f0">
+          <td style="padding:5px 10px;font-size:12px">
+            ${b.batter_name}
+            <span style="font-size:10px;color:#888;margin-left:4px">vs ${b.opp_pitcher_name?.split(' ').pop() || '?'}</span>
+          </td>
+          <td style="padding:5px 10px;text-align:right;font-family:Courier New;font-weight:700;font-size:13px;color:${tbColor}">${tb?.toFixed(2) || '—'}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:11px">${(b.proj_hr_pct || 0).toFixed(1)}%</td>
+          <td style="padding:5px 10px;text-align:right;font-size:12px;font-weight:700;color:${j2Color}">${b.juiced_plus_overall?.toFixed(1) || '—'}</td>
+          <td style="padding:5px 10px;text-align:right;font-size:11px;font-family:Courier New">${b.proj_ops?.toFixed(3) || '—'}</td>
+        </tr>`;
+      }).join('');
+
+      return `
+      <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:16px;overflow:hidden">
+        <div style="background:#1a3a5c;color:white;padding:10px 14px;display:flex;justify-content:space-between;align-items:center">
+          <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;letter-spacing:0.05em">${awayAbbrev} @ ${homeAbbrev}</div>
+          <div style="font-size:11px;opacity:0.8;font-family:Courier New">${gameStatus}</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0">
+          <div style="border-right:1px solid #e0e0e0">
+            <div style="padding:8px 10px;font-size:11px;font-weight:700;color:#555;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid #e0e0e0;background:#f9f9f9">Starters</div>
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="font-size:10px;color:#888;border-bottom:1px solid #eee">
+                  <th style="text-align:left;padding:4px 10px">PITCHER</th>
+                  <th style="text-align:right;padding:4px 10px">K/6</th>
+                  <th style="text-align:right;padding:4px 10px">K%</th>
+                  <th style="text-align:right;padding:4px 10px">HR%</th>
+                  <th style="text-align:right;padding:4px 10px">pK+</th>
+                  <th style="text-align:right;padding:4px 10px">G3+</th>
+                </tr>
+              </thead>
+              <tbody>${pitcherRows || '<tr><td colspan="6" style="padding:8px 10px;color:#888;font-size:12px">TBD</td></tr>'}</tbody>
+            </table>
+          </div>
+          <div>
+            <div style="padding:8px 10px;font-size:11px;font-weight:700;color:#555;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid #e0e0e0;background:#f9f9f9">Top Batters — Proj TB</div>
+            <table style="width:100%;border-collapse:collapse">
+              <thead>
+                <tr style="font-size:10px;color:#888;border-bottom:1px solid #eee">
+                  <th style="text-align:left;padding:4px 10px">BATTER</th>
+                  <th style="text-align:right;padding:4px 10px">TB</th>
+                  <th style="text-align:right;padding:4px 10px">HR%</th>
+                  <th style="text-align:right;padding:4px 10px">J2+</th>
+                  <th style="text-align:right;padding:4px 10px">OPS</th>
+                </tr>
+              </thead>
+              <tbody>${batterRows || '<tr><td colspan="5" style="padding:8px 10px;color:#888;font-size:12px">No batter projections</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+        <div id="proj-${gamePk}" style="min-height:0"></div>
+      </div>`;
+    }).join('');
+
+    el.innerHTML = cards || `<div style="color:#888;padding:20px">No games found for today.</div>`;
+    _gamesLoaded = true;
+
+    // Async score projections — fire after cards render
+    allGamePks.forEach(gp => {
+      const projEl = document.getElementById(`proj-${gp}`);
+      if (projEl) loadScoreProjection(gp, projEl);
+    });
+
+  } catch(e) {
+    el.innerHTML = `<div style="color:#b71c1c;padding:20px">Error loading games: ${e.message}</div>`;
+  }
+}
+
+async function loadScoreProjection(gamePk, containerEl) {
+  try {
+    const r = await fetch(`${API}/mlb/game/${gamePk}/score-projection?n_sims=200`);
+    if (!r.ok) return;
+    const proj = await r.json();
+    if (proj.error) return;
+
+    const winColor = proj.home_win_pct > 55 ? '#1b5e20'
+                   : proj.home_win_pct < 45 ? '#b71c1c' : '#555';
+
+    const ouLines = Object.entries(proj.over_under)
+      .filter(([, pct]) => pct > 60 || pct < 40)
+      .map(([line, pct]) => {
+        const dir = pct > 60 ? 'O' : 'U';
+        const color = pct > 60 ? '#1b5e20' : '#b71c1c';
+        const displayPct = dir === 'O' ? pct : (100 - pct);
+        return `<div><span style="color:#888">${dir}${line}:</span> <strong style="color:${color}">${displayPct}%</strong></div>`;
+      }).join('');
+
+    containerEl.innerHTML = `
+      <div style="background:#f0f4f8;padding:8px 14px;display:flex;gap:20px;
+                   align-items:center;font-size:12px;border-top:1px solid #e0e0e0;
+                   flex-wrap:wrap">
+        <div style="font-family:Courier New">
+          <span style="color:#888">PROJ:</span>
+          <strong>${proj.proj_away_runs} – ${proj.proj_home_runs}</strong>
+        </div>
+        <div style="font-family:Courier New">
+          <span style="color:#888">TOTAL:</span>
+          <strong>${proj.proj_total_runs}</strong>
+        </div>
+        <div>
+          <span style="color:#888">HOME WIN:</span>
+          <strong style="color:${winColor}">${proj.home_win_pct}%</strong>
+        </div>
+        ${ouLines}
+        <div style="margin-left:auto;font-size:10px;color:#aaa">${proj.n_sims} sims</div>
+      </div>`;
+  } catch(e) {}
+}
+
+//\u2500\u2500 MODEL SCORES \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+let _modelScoresLoaded = false;
+
+async function loadModelScores() {
+  if (_modelScoresLoaded) return;
+  const el = document.getElementById('model-scores-content');
+  if (!el) return;
+  try {
+    const r = await fetch(`${API}/mlb/model-scores?days=30`);
+    if (!r.ok) throw new Error('no data');
+    const data = await r.json();
+    el.innerHTML = renderModelScores(data);
+    _modelScoresLoaded = true;
+  } catch(e) {
+    el.innerHTML = '<div style="color:#888;font-size:13px;padding:20px 0">No model score data available yet. Run backfill to populate.</div>';
+  }
+}
+
+function renderModelScores(data) {
+  const rows = data.rows || [];
+  const seasonAvgs = {};
+  (data.season_averages || []).forEach(r => {
+    seasonAvgs[r.player_type + '/' + r.metric] = r;
+  });
+
+  // Latest date's scores
+  const latestDate = rows.length ? rows[0].score_date : null;
+  const latest = {};
+  rows.filter(r => r.score_date === latestDate).forEach(r => {
+    latest[r.player_type + '/' + r.metric] = r;
+  });
+
+  // 30-day trend: group by date for sparkline data
+  const byMetric = {};
+  rows.forEach(r => {
+    const k = r.player_type + '/' + r.metric;
+    if (!byMetric[k]) byMetric[k] = [];
+    byMetric[k].push({date: r.score_date, mae: r.mae, bias: r.bias});
+  });
+
+  function fmtMAE(v, unit='') {
+    if (v == null) return '\u2014';
+    return parseFloat(v).toFixed(unit === '%' ? 1 : 2) + unit;
+  }
+  function fmtBias(v) {
+    if (v == null) return '\u2014';
+    const n = parseFloat(v);
+    if (Math.abs(n) < 0.05) return '<span style="color:#888">\u2248 cal</span>';
+    const label = n > 0 ? 'over' : 'under';
+    const color = '#e65100';
+    return `<span style="color:${color}">${label} ${Math.abs(n).toFixed(2)}</span>`;
+  }
+  function metricRow(ptype, metric, label, unit, noteHtml='') {
+    const k = ptype + '/' + metric;
+    const d = latest[k] || {};
+    const s = seasonAvgs[k] || {};
+    return `<tr style="border-bottom:1px solid #eee">
+      <td style="padding:4px 10px;font-weight:600">${label}${noteHtml}</td>
+      <td style="padding:4px 10px;text-align:right">${d.n_players ?? '\u2014'}</td>
+      <td style="padding:4px 10px;text-align:right">${fmtMAE(d.mae, unit)}</td>
+      <td style="padding:4px 10px;text-align:right">${fmtBias(d.bias)}</td>
+      <td style="padding:4px 10px;text-align:right">${d.within_1 != null ? d.within_1+'%' : '\u2014'}</td>
+      <td style="padding:4px 10px;text-align:right">${fmtMAE(d.mae_7d, unit)}</td>
+      <td style="padding:4px 10px;text-align:right">${fmtMAE(s.mae_season, unit)}</td>
+    </tr>`;
+  }
+
+  const dateLabel = latestDate ? `Latest: ${latestDate}` : 'No recent data';
+
+  return `
+<div style="max-width:860px">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+    <div style="font-size:12px;color:#888;letter-spacing:0.08em">${dateLabel} \u00b7 ${data.days}-day window</div>
+    <button onclick="_modelScoresLoaded=false;loadModelScores()" style="font-size:11px;padding:3px 10px;cursor:pointer;border:1px solid #ccc;border-radius:3px;background:#fff">\u21ba Refresh</button>
+  </div>
+
+  <div style="font-size:13px;font-weight:700;letter-spacing:0.1em;margin-bottom:8px;text-transform:uppercase">Pitchers</div>
+  <table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:20px">
+    <thead><tr style="border-bottom:2px solid #000">
+      <th style="text-align:left;padding:4px 10px">Metric</th>
+      <th style="padding:4px 10px;text-align:right">N</th>
+      <th style="padding:4px 10px;text-align:right">MAE</th>
+      <th style="padding:4px 10px;text-align:right">Bias</th>
+      <th style="padding:4px 10px;text-align:right">Within 1</th>
+      <th style="padding:4px 10px;text-align:right">7-Day MAE</th>
+      <th style="padding:4px 10px;text-align:right">Season MAE</th>
+    </tr></thead>
+    <tbody>
+      ${metricRow('pitcher','k_count','K Count',' K','<span style="font-size:10px;color:#888;font-weight:400"> (proj @21 BF)</span>')}
+      ${metricRow('pitcher','k_rate','K Rate','%')}
+      ${metricRow('pitcher','er_proxy','ER',' ER','<span style="font-size:10px;color:#888;font-weight:400"> (OPS proxy)</span>')}
+      ${(() => {
+        const k = 'pitcher/ip_dist'; const d = latest[k] || {}; const s = seasonAvgs[k] || {};
+        return `<tr><td style="padding:4px 10px;font-weight:600">IP <span style="font-size:10px;color:#888;font-weight:400">(actuals)</span></td>
+          <td style="padding:4px 10px;text-align:right">${d.n_players ?? '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right" colspan="5">
+            avg ${d.mean_actual != null ? parseFloat(d.mean_actual).toFixed(2) : '\u2014'} inn
+            &nbsp;\u00b7&nbsp; \u03c3 ${d.rmse != null ? parseFloat(d.rmse).toFixed(2) : '\u2014'}
+          </td></tr>`;
+      })()}
+    </tbody>
+  </table>
+
+  <div style="font-size:13px;font-weight:700;letter-spacing:0.1em;margin-bottom:8px;text-transform:uppercase">Batters</div>
+  <table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:12px">
+    <thead><tr style="border-bottom:2px solid #000">
+      <th style="text-align:left;padding:4px 10px">Metric</th>
+      <th style="padding:4px 10px;text-align:right">N</th>
+      <th style="padding:4px 10px;text-align:right">MAE</th>
+      <th style="padding:4px 10px;text-align:right">Bias</th>
+      <th style="padding:4px 10px;text-align:right">Within 1</th>
+      <th style="padding:4px 10px;text-align:right">7-Day MAE</th>
+      <th style="padding:4px 10px;text-align:right">Season MAE</th>
+    </tr></thead>
+    <tbody>
+      ${metricRow('batter','tb','Total Bases',' TB')}
+      ${metricRow('batter','k_rate','K Rate','%')}
+      ${(() => {
+        const k = 'batter/hr_brier'; const d = latest[k] || {}; const s = seasonAvgs[k] || {};
+        return `<tr><td style="padding:4px 10px;font-weight:600">HR Rate <span style="font-size:10px;color:#888;font-weight:400">(Brier)</span></td>
+          <td style="padding:4px 10px;text-align:right">${d.n_players ?? '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${d.mae != null ? parseFloat(d.mae).toFixed(4) : '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right;font-size:12px;color:#555">
+            proj ${d.mean_proj != null ? parseFloat(d.mean_proj).toFixed(1)+'%' : '\u2014'}
+            \u00b7 act ${d.mean_actual != null ? (parseFloat(d.mean_actual)*100).toFixed(1)+'%' : '\u2014'}
+          </td>
+          <td style="padding:4px 10px;text-align:right">\u2014</td>
+          <td style="padding:4px 10px;text-align:right">${d.mae_7d != null ? parseFloat(d.mae_7d).toFixed(4) : '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${s.mae_season != null ? parseFloat(s.mae_season).toFixed(4) : '\u2014'}</td>
+        </tr>`;
+      })()}
+    </tbody>
+  </table>
+
+  <div style="font-size:13px;font-weight:700;letter-spacing:0.1em;margin-bottom:8px;text-transform:uppercase">Games</div>
+  <table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:12px">
+    <thead><tr style="border-bottom:2px solid #000">
+      <th style="text-align:left;padding:4px 10px">Metric</th>
+      <th style="padding:4px 10px;text-align:right">N</th>
+      <th style="padding:4px 10px;text-align:right">MAE / Acc</th>
+      <th style="padding:4px 10px;text-align:right">Bias / Detail</th>
+      <th style="padding:4px 10px;text-align:right">Win %</th>
+      <th style="padding:4px 10px;text-align:right">7-Day MAE</th>
+      <th style="padding:4px 10px;text-align:right">Season MAE</th>
+    </tr></thead>
+    <tbody>
+      ${(() => {
+        const rt = latest['game/run_total'] || {}; const rts = seasonAvgs['game/run_total'] || {};
+        const tr = latest['game/team_runs'] || {}; const trs = seasonAvgs['game/team_runs'] || {};
+        const wp = latest['game/win_pick']  || {}; const wps = seasonAvgs['game/win_pick']  || {};
+        return `
+        <tr style="border-bottom:1px solid #eee">
+          <td style="padding:4px 10px;font-weight:600">Total Runs
+            <span style="font-size:10px;color:#888;font-weight:400"> (both teams)</span></td>
+          <td style="padding:4px 10px;text-align:right">${rt.n_players ?? '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${rt.mae != null ? parseFloat(rt.mae).toFixed(2)+' R' : '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${fmtBias(rt.bias)}</td>
+          <td style="padding:4px 10px;text-align:right">\u2014</td>
+          <td style="padding:4px 10px;text-align:right">${rt.mae_7d != null ? parseFloat(rt.mae_7d).toFixed(2)+' R' : '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${rts.mae_season != null ? parseFloat(rts.mae_season).toFixed(2)+' R' : '\u2014'}</td>
+        </tr>
+        <tr style="border-bottom:1px solid #eee">
+          <td style="padding:4px 10px;font-weight:600">Per-Team Runs</td>
+          <td style="padding:4px 10px;text-align:right">${tr.n_players ?? '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${tr.mae != null ? parseFloat(tr.mae).toFixed(2)+' R' : '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${fmtBias(tr.bias)}</td>
+          <td style="padding:4px 10px;text-align:right">\u2014</td>
+          <td style="padding:4px 10px;text-align:right">${tr.mae_7d != null ? parseFloat(tr.mae_7d).toFixed(2)+' R' : '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right">${trs.mae_season != null ? parseFloat(trs.mae_season).toFixed(2)+' R' : '\u2014'}</td>
+        </tr>
+        <tr>
+          <td style="padding:4px 10px;font-weight:600">Win Prediction</td>
+          <td style="padding:4px 10px;text-align:right">${wp.n_players ?? '\u2014'}</td>
+          <td style="padding:4px 10px;text-align:right;font-weight:600;color:${wp.within_1 != null ? (parseFloat(wp.within_1) >= 55 ? '#1b5e20' : parseFloat(wp.within_1) <= 45 ? '#b71c1c' : '#555') : '#555'}">
+            ${wp.within_1 != null ? parseFloat(wp.within_1).toFixed(1)+'%' : '\u2014'}
+          </td>
+          <td style="padding:4px 10px;text-align:right;font-size:11px;color:#555">correct picks</td>
+          <td style="padding:4px 10px;text-align:right">\u2014</td>
+          <td style="padding:4px 10px;text-align:right">${(() => { const v = wp.mae_7d; if (v==null) return '\u2014'; const acc=(1-parseFloat(v))*100; return acc.toFixed(1)+'%'; })()}</td>
+          <td style="padding:4px 10px;text-align:right">${(() => { const v = wps.mae_season; if (v==null) return '\u2014'; const acc=(1-parseFloat(v))*100; return acc.toFixed(1)+'%'; })()}</td>
+        </tr>`;
+      })()}
+    </tbody>
+  </table>
+
+  <div style="font-size:11px;color:#888;border-top:1px solid #ddd;padding-top:8px;margin-top:4px">
+    K Count: proj = K% \u00d7 21 PA (6-inn baseline) \u00b7 ER: OPS-against \u00d7 4.5 \u00d7 IP/9 proxy \u00b7
+    Game runs: proj_ops \u00d7 9.0 \u2212 0.88 per team (starter-only, bullpen not modeled) \u00b7
+    Bias = over/under projection (negative = model under-projected) \u00b7 Brier score: lower = better HR calibration
+  </div>
+</div>`;
 }
 
 function norm(s) { return s.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
@@ -735,13 +1283,13 @@ function profileScoreColor(v) {
   return '#b71c1c';
 }
 
-function bapvClass(v) {
-  if (v >= 130) return 'bapv-elite';
-  if (v >= 115) return 'bapv-great';
-  if (v >= 105) return 'bapv-above';
-  if (v >= 95)  return 'bapv-avg';
-  if (v >= 80)  return 'bapv-below';
-  return 'bapv-poor';
+function scoreClass(v) {
+  if (v >= 130) return 'score-elite';
+  if (v >= 115) return 'score-great';
+  if (v >= 105) return 'score-above';
+  if (v >= 95)  return 'score-avg';
+  if (v >= 80)  return 'score-below';
+  return 'score-poor';
 }
 
 // ── TICKER ─────────────────────────────────────────────────────────
@@ -885,22 +1433,28 @@ function renderLB() {
   rows.sort((a,b) => { const av=a[lbSort]??0, bv=b[lbSort]??0; return lbDir*(av>bv?1:av<bv?-1:0); });
   document.getElementById('lb-count').textContent = `${rows.length} results`;
   if (!rows.length) {
-    document.getElementById('lb-body').innerHTML = `<tr><td colspan="10"><div class="state-box"><div class="state-text">No results</div></div></td></tr>`;
+    document.getElementById('lb-body').innerHTML = `<tr><td colspan="12"><div class="state-box"><div class="state-text">No results</div></div></td></tr>`;
     return;
   }
   document.getElementById('lb-body').innerHTML = rows.map((r,i) => {
-    const s = r.season_bapv_plus || 0;
-    const cls = bapvClass(s);
-    const g2 = r.goose2_plus;
-    const g2cls = g2 != null ? bapvClass(g2) : '';
+    const g3 = r.goose3_plus;
+    const g3Cls = g3 != null ? scoreClass(g3) : '';
+    const pk = r.pk_plus;
+    const pkCls = pk != null ? scoreClass(pk) : '';
+    const phr = r.phr_plus;
+    const phrCls = phr != null ? scoreClass(phr) : '';
+    const stuff = r.stuff_score;
+    const stuffCls = stuff != null ? scoreClass(stuff) : '';
     return `<tr onclick="loadProfile(${r.pitcher_id},'${esc(r.pitcher_name)}')">
       <td class="mono" style="color:var(--gray-400)">${i+1}</td>
       <td class="name-cell">${r.pitcher_name||'—'}</td>
       <td>
         <span class="pitch-badge" style="background:${PITCH_COLORS[r.pitch_type]||'#888'}">${r.pitch_type}</span>
       </td>
-      <td class="num mono ${cls}">${s.toFixed(1)}</td>
-      <td class="num mono ${g2cls}">${g2 != null ? g2.toFixed(1) : '—'}</td>
+      <td class="num mono ${g3Cls}">${g3 != null ? g3.toFixed(1) : '—'}</td>
+      <td class="num mono ${pkCls}">${pk != null ? pk.toFixed(1) : '—'}</td>
+      <td class="num mono ${phrCls}">${phr != null ? phr.toFixed(1) : '—'}</td>
+      <td class="num mono ${stuffCls}">${stuff != null ? stuff.toFixed(1) : '—'}</td>
       <td class="num mono">${(r.total_pitches||0).toLocaleString()}</td>
       <td class="num mono">${r.games||'—'}</td>
       <td class="num mono">${r.avg_velo?r.avg_velo.toFixed(1):'—'}</td>
@@ -1139,7 +1693,7 @@ function renderDailyBatterProjections() {
         <div style="font-size:10px;color:#888">${b.opp_pitcher_hand||'?'}HP · Goose+ <span style="font-weight:700;color:${scoreColor(b.opp_goose_plus)}">${b.opp_goose_plus!=null?b.opp_goose_plus.toFixed(1):'—'}</span></div>
       </td>
       <td style="padding:10px 12px;text-align:right">${juicedDisplay}</td>
-      <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:13px;font-weight:700;color:${joColor}">${jo!=null?Math.round(jo):'—'}</td>
+      <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:14px;font-weight:700;color:${joColor}">${jo!=null?Math.round(jo):'—'}</td>
       <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:14px;font-weight:700;color:${opsColor}">${b.proj_ops!=null?b.proj_ops.toFixed(3):'—'}</td>
       <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:13px">${b.proj_avg!=null?b.proj_avg.toFixed(3):'—'}</td>
       <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:13px">${b.proj_slg!=null?b.proj_slg.toFixed(3):'—'}</td>
@@ -1490,12 +2044,14 @@ function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pi
             / <strong>${overallGoose.goose_plus_vs_lhh?.toFixed(1)}</strong> <span style="color:#888;font-size:11px">vs LHH</span>
             / <strong>${overallGoose.goose_plus_vs_rhh?.toFixed(1)}</strong> <span style="color:#888;font-size:11px">vs RHH</span>` : ''}
           </div>
-          ${(() => { const g2 = data.goose2; if (!g2) return ''; const g2color = profileScoreColor(g2.goose2_plus); return `
-          <div style="font-family:'Courier New',monospace;font-size:14px;color:#1a1a1a">
-            <span style="color:#888;font-size:12px">Goose+ 2:</span>
-            <strong style="color:${g2color}">${g2.goose2_plus?.toFixed(1) || '—'}</strong>
-            ${g2.goose2_vs_lhh != null ? `/ <strong>${g2.goose2_vs_lhh.toFixed(1)}</strong> <span style="color:#888;font-size:11px">vs LHH</span> / <strong>${g2.goose2_vs_rhh.toFixed(1)}</strong> <span style="color:#888;font-size:11px">vs RHH</span>` : ''}
-          </div>`; })()}
+          ${(() => {
+            const pk = data.pk; const phr = data.phr;
+            if (!pk && !phr) return '';
+            return `<div style="font-family:'Courier New',monospace;font-size:14px;color:#1a1a1a">
+              ${pk ? `<span style="margin-right:14px"><span style="color:#888;font-size:12px">pK+:</span> <strong style="color:${profileScoreColor(pk.pk_plus)}">${pk.pk_plus?.toFixed(1)||'—'}</strong>${pk.pk_vs_lhh != null ? ` / <strong>${pk.pk_vs_lhh.toFixed(1)}</strong> <span style="color:#888;font-size:11px">LHH</span> / <strong>${pk.pk_vs_rhh.toFixed(1)}</strong> <span style="color:#888;font-size:11px">RHH</span>` : ''}</span>` : ''}
+              ${phr ? `<span><span style="color:#888;font-size:12px">pHR+:</span> <strong style="color:${profileScoreColor(phr.phr_plus)}">${phr.phr_plus?.toFixed(1)||'—'}</strong>${phr.phr_vs_lhh != null ? ` / <strong>${phr.phr_vs_lhh.toFixed(1)}</strong> <span style="color:#888;font-size:11px">LHH</span> / <strong>${phr.phr_vs_rhh.toFixed(1)}</strong> <span style="color:#888;font-size:11px">RHH</span>` : ''}</span>` : ''}
+            </div>`;
+          })()}
         </div>
         <img src="${headshot}" style="width:110px;height:110px;object-fit:cover;border:2px solid #e0e0e0;border-radius:6px;background:#f5f5f5;flex-shrink:0"
           onerror="this.style.display='none'">
@@ -1589,6 +2145,7 @@ function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pi
          <div style="position:relative">
            <canvas id="pitch-canvas" style="width:100%;height:380px;border-radius:6px;background:#1a1a2e;display:block"></canvas>
            <div id="viz-overlay" style="position:absolute;top:10px;left:10px;font-size:11px;color:rgba(255,255,255,0.6);pointer-events:none">Click a zone to animate</div>
+           <button onclick="resetVizCamera()" style="position:absolute;bottom:8px;right:8px;padding:4px 10px;font-size:11px;background:rgba(0,0,0,0.5);color:white;border:1px solid rgba(255,255,255,0.3);border-radius:4px;cursor:pointer">&#8982; Reset</button>
          </div>
        </div>
      </div>
@@ -1662,7 +2219,7 @@ async function loadGameLog(pitcherId, season) {
 
     const rows = games.map((g,i) => {
       const dateStr = g.game_date ? g.game_date.slice(5,10) : '—';
-      const bapvColor = scoreColor(g.avg_bapv_plus || 100);
+      const bapvColor = scoreColor(g.goose3_plus || 100);
       const pitchBreakdown = (g.pitches||[]).map(p => {
         const c = PITCH_COLORS[p.pitch_type_code] || '#888';
         return `<tr style="border-bottom:1px solid var(--border)">
@@ -1700,7 +2257,7 @@ async function loadGameLog(pitcherId, season) {
           </td>
           <td style="padding:11px 14px;font-family:var(--font-mono);font-size:12px;text-align:center;color:var(--gray-600)">${g.total_pitches}</td>
           <td style="padding:11px 14px;text-align:center">
-            <span style="font-size:16px;font-weight:700;font-family:var(--font-mono);color:${bapvColor}">${g.avg_bapv_plus?.toFixed(1)||'—'}</span>
+            <span style="font-size:16px;font-weight:700;font-family:var(--font-mono);color:${bapvColor}">${g.goose3_plus?.toFixed(1)||'—'}</span>
           </td>
           <td style="padding:11px 14px;font-family:var(--font-mono);font-size:12px;text-align:center">${g.avg_velo?.toFixed(1)||'—'}</td>
           <td style="padding:11px 14px;font-family:var(--font-mono);font-size:12px;text-align:center">${g.whiff_rate?(g.whiff_rate*100).toFixed(1)+'%':'—'}</td>
@@ -1869,9 +2426,10 @@ async function runMatchupAnalysis() {
   const el = document.getElementById('matchup-result-section');
   el.innerHTML = `<div class="state-box" style="padding:28px"><div class="spinner"></div><div class="state-text">Analyzing matchup...</div></div>`;
   try {
-    const [matchupRes, statsRes] = await Promise.all([
+    const [matchupRes, statsRes, pitcherStatsRes] = await Promise.all([
       fetch(`${API}/mlb/matchup/pitcher/${pitcherId}/vs-lineup/${matchupGamePk}`),
-      fetch(`${API}/mlb/lineup-stats/${matchupGamePk}?season=2026`)
+      fetch(`${API}/mlb/lineup-stats/${matchupGamePk}?season=2026`),
+      fetch(`${API}/mlb/lineup-stats/pitchers?ids=${pitcherId}&season=2026`)
     ]);
     if (!matchupRes.ok) { el.innerHTML=`<div class="state-box"><div class="state-text">Could not load matchup data</div></div>`; return; }
     const data = await matchupRes.json();
@@ -1881,6 +2439,7 @@ async function runMatchupAnalysis() {
     }
     const lineupStats = statsRes.ok ? await statsRes.json() : {stats: {}};
     data._lineupStats = lineupStats.stats;
+    data._pitcherStats = pitcherStatsRes.ok ? await pitcherStatsRes.json() : {};
     matchupLineupData = data;
     renderMatchupResult(matchupLineupData);
   } catch(e) {
@@ -1896,12 +2455,22 @@ function renderMatchupResult(data) {
   const fmt = (v, dec=3) => v != null ? Number(v).toFixed(dec) : '—';
   const fmtPct = (v) => v != null ? Number(v).toFixed(1) + '%' : '—';
 
+  const pitcherG3 = parseFloat((data._pitcherStats || {})[matchupPitcherId]?.goose3_plus) || 100;
+
   const lineupRows = lineup.map((b,i) => {
     const stats = (data._lineupStats || {})[b.player_id] || {};
     const kColor = b.projected_k_pct > 0.30 ? '#1b5e20' :
                    b.projected_k_pct > 0.22 ? '#333' :
                    b.projected_k_pct > 0.15 ? '#e65100' : '#b71c1c';
     const bapvColor = scoreColor(b.weighted_bapv_vs_batter);
+
+    // G3+ vs J2+ mismatch indicator
+    const batterJ2 = parseFloat(stats.juiced2_plus) || 100;
+    const delta = pitcherG3 - batterJ2;
+    const mismatchColor = delta > 10 ? '#1b5e20' : delta < -10 ? '#b71c1c' : '#888';
+    const mismatchLabel = delta > 0 ? `+${delta.toFixed(0)}` : delta.toFixed(0);
+    const mismatchTitle = `G3+: ${pitcherG3.toFixed(1)} vs J2+: ${batterJ2.toFixed(1)}`;
+
     return `
       <tr id="batter-row-${b.player_id}" style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8;cursor:pointer"
           onclick="expandBatterRow(${b.player_id},'${esc(b.name)}',${matchupPitcherId},this)"
@@ -1922,10 +2491,13 @@ function renderMatchupResult(data) {
         <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:13px;font-weight:600;color:${stats.wrc_plus >= 130 ? '#1b5e20' : stats.wrc_plus >= 100 ? '#333' : stats.wrc_plus >= 80 ? '#e65100' : stats.wrc_plus ? '#b71c1c' : '#888'}">${stats.wrc_plus ? Math.round(stats.wrc_plus) : '—'}</td>
         <td style="padding:10px 12px;text-align:right;font-family:Courier New;font-size:13px;color:#1a1a1a">${fmtPct(stats.k_pct)}</td>
         <td style="padding:10px 12px;text-align:right">
-          <span style="font-family:Courier New;font-size:13px;font-weight:700;color:${kColor}">${(b.projected_k_pct*100).toFixed(1)}%</span>
+          <span style="font-family:Courier New;font-size:14px;font-weight:700;color:${kColor}">${(b.projected_k_pct*100).toFixed(1)}%</span>
         </td>
         <td style="padding:10px 12px;text-align:right">
           <span style="font-family:Courier New;font-size:13px;font-weight:600;color:${bapvColor}">${b.weighted_bapv_vs_batter}</span>
+        </td>
+        <td style="padding:10px 12px;text-align:right" title="${mismatchTitle}">
+          <span style="font-family:Courier New;font-size:13px;font-weight:700;color:${mismatchColor}">${mismatchLabel}</span>
         </td>
         <td style="padding:10px 12px;text-align:center;font-size:11px;color:#888">▶</td>
       </tr>`;
@@ -1968,6 +2540,7 @@ function renderMatchupResult(data) {
             <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#444">K%</th>
             <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#444">Proj K%</th>
             <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#444">Goose Adv</th>
+            <th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#444" title="G3+ minus J2+ — positive favors pitcher">G3/J2</th>
             <th style="padding:8px 12px;text-align:center;font-size:11px;font-weight:700;color:#444"></th>
           </tr>
         </thead>
@@ -1985,7 +2558,7 @@ async function expandBatterRow(batterId, batterName, pitcherId, rowEl) {
 
   const tr = document.createElement('tr');
   tr.id = `expand-${batterId}`;
-  tr.innerHTML = `<td colspan="7" style="padding:0;background:var(--gray-50)">
+  tr.innerHTML = `<td colspan="14" style="padding:0;background:var(--gray-50)">
     <div class="batter-expand-panel" id="expand-panel-${batterId}">
       <div style="padding:14px;color:var(--gray-400);font-size:13px;font-family:var(--font-mono)">
         <div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:8px"></div>
@@ -2366,13 +2939,15 @@ async function loadHitterProfile(batterId, name) {
     `<div class="state-box"><div class="spinner"></div>
      <div class="state-text">Loading ${name || ''}...</div></div>`;
   try {
-    const [profileRes, percRes] = await Promise.all([
+    const [profileRes, percRes, juicedSplitsRes] = await Promise.all([
       fetch(`${API}/mlb/hitter/${batterId}/profile?season=2026`),
       fetch(`${API}/mlb/hitter/${batterId}/percentiles?season=2026`),
+      fetch(`${API}/mlb/hitter/${batterId}/juiced-splits?season=2026`),
     ]);
     const data = await profileRes.json();
     const percs = percRes.ok ? await percRes.json() : null;
-    renderHitterProfile(data, percs);
+    const juicedSplits = juicedSplitsRes.ok ? await juicedSplitsRes.json() : null;
+    renderHitterProfile(data, percs, juicedSplits);
   } catch(e) {
     document.getElementById('hitter-content').innerHTML =
       `<div class="state-box"><div class="state-text">Could not load profile</div></div>`;
@@ -2457,7 +3032,7 @@ function renderJuicedBreakdown(juicedData) {
     </div>`;
 }
 
-function renderHitterProfile(data, percs=null) {
+function renderHitterProfile(data, percs=null, juicedSplits=null) {
   const s = data.season_stats || {};
   const p = data.plus_stats || {};
   const groups = data.pitch_groups || {};
@@ -2495,15 +3070,17 @@ function renderHitterProfile(data, percs=null) {
             ${s.bb != null ? `<strong>${s.bb||0}</strong> <span style="color:#888;font-size:12px">BB</span> / ` : ''}
             ${s.k != null ? `<strong>${s.k}</strong> <span style="color:#888;font-size:12px">K</span>` : ''}
           </div>
-          <div style="font-family:'Courier New',monospace;font-size:14px;color:#1a1a1a;margin-bottom:4px">
-            <span style="color:#888;font-size:12px">Juiced+:</span>
-            <strong style="color:${juicedColor}">${juicedVal?.toFixed(1)||'—'}</strong>
+          <div style="font-family:'Courier New',monospace;font-size:13px;color:#1a1a1a;margin-bottom:4px">
+            <span style="color:#888;font-size:11px">Juiced+:</span>
+            <strong style="color:${juicedColor}">${juicedSplits?.overall?.juiced2_plus?.toFixed(1) || juicedVal?.toFixed(1) || '—'}</strong>
+            ${juicedSplits?.vs_rhp ? ` / <strong style="color:${scoreColor(juicedSplits.vs_rhp.juiced_plus)}">${juicedSplits.vs_rhp.juiced_plus?.toFixed(1)}</strong><span style="color:#888;font-size:10px"> vs RHP</span>` : ''}
+            ${juicedSplits?.vs_lhp ? ` / <strong style="color:${scoreColor(juicedSplits.vs_lhp.juiced_plus)}">${juicedSplits.vs_lhp.juiced_plus?.toFixed(1)}</strong><span style="color:#888;font-size:10px"> vs LHP</span>` : ''}
           </div>
           ${(() => { const j2 = data.juiced2; if (!j2) return ''; const j2color = profileScoreColor(j2.juiced2_plus); return `
           <div style="font-family:'Courier New',monospace;font-size:14px;color:#1a1a1a">
             <span style="color:#888;font-size:12px">Juiced+ 2:</span>
             <strong style="color:${j2color}">${j2.juiced2_plus?.toFixed(1)||'—'}</strong>
-            ${j2.avg_goose2_faced != null ? `<span style="color:#888;font-size:11px"> vs G2+ <strong style="color:#1a1a1a">${j2.avg_goose2_faced.toFixed(1)}</strong></span>` : ''}
+            ${j2.avg_pk_faced != null ? `<span style="color:#888;font-size:11px"> vs pK+ <strong style="color:#1a1a1a">${j2.avg_pk_faced.toFixed(1)}</strong></span>` : ''}
             ${j2.bat_speed != null ? `/ <span style="color:#888;font-size:11px">Bat Spd</span> <strong>${j2.bat_speed.toFixed(1)}</strong>` : ''}
           </div>`; })()}
         </div>
@@ -2533,7 +3110,7 @@ function renderHitterProfile(data, percs=null) {
       <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.whiff_pct)}</td>
       <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.zone_contact_pct)}</td>
       <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.chase_pct)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px;font-weight:700;color:${bhC}">
+      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:14px;font-weight:700;color:${bhC}">
         ${bh != null ? (bh > 0 ? '+' : '') + bh + '%' : '—'}
       </td>
     </tr>`;
@@ -2997,12 +3574,14 @@ async function selectMEBatter(id, name) {
   document.getElementById('me-batter-card').innerHTML =
     `<div style="font-size:12px;color:#888">Loading...</div>`;
 
-  const [profileRes, juicedRes] = await Promise.all([
+  const [profileRes, juicedRes, juicedSplitsRes] = await Promise.all([
     fetch(`${API}/mlb/batter/${id}/season-stats?season=2026`),
-    fetch(`${API}/mlb/juiced/batter/${id}?season=2026`)
+    fetch(`${API}/mlb/juiced/batter/${id}?season=2026`),
+    fetch(`${API}/mlb/hitter/${id}/juiced-splits?season=2026`),
   ]);
   const profile = profileRes.ok ? await profileRes.json() : null;
   const juiced = juicedRes.ok ? await juicedRes.json() : null;
+  const juicedSplits = juicedSplitsRes.ok ? await juicedSplitsRes.json() : null;
 
   const stats = profile?.stats || {};
   const juicedPlus = juiced?.overall_juiced_plus;
@@ -3014,6 +3593,11 @@ async function selectMEBatter(id, name) {
         <div style="font-family:Courier New;font-size:13px;color:#555;margin-top:4px">
           ${stats.avg?.toFixed(3)||'—'} / ${stats.obp?.toFixed(3)||'—'} / ${stats.slg?.toFixed(3)||'—'}
         </div>
+        ${juicedSplits ? `
+        <div style="font-size:11px;font-family:'Courier New',monospace;color:#888;margin-top:3px">
+          vs RHP: <strong style="color:${scoreColor(juicedSplits.vs_rhp?.juiced_plus)}">${juicedSplits.vs_rhp?.juiced_plus?.toFixed(1) || '—'}</strong>
+          · vs LHP: <strong style="color:${scoreColor(juicedSplits.vs_lhp?.juiced_plus)}">${juicedSplits.vs_lhp?.juiced_plus?.toFixed(1) || '—'}</strong>
+        </div>` : ''}
       </div>
       ${juicedPlus != null ? `
       <div style="text-align:center">
@@ -3109,7 +3693,8 @@ async function runSimulation() {
       body: JSON.stringify({
         pitcher_id: mePitcherId, batter_id: meBatterId,
         n_simulations: nSims, outs: meOuts, runners: meRunners, season: 2026,
-        balls: meCount.balls, strikes: meCount.strikes
+        balls: meCount.balls, strikes: meCount.strikes,
+        game_pk: meGamePk || matchupGamePk || null
       })
     });
     if (!r.ok) throw new Error(await r.text());
@@ -3214,6 +3799,18 @@ function renderSimResults(data) {
           <div style="font-size:12px;color:#888;margin-top:4px">
             ${meOuts} out${meOuts!==1?'s':''} · ${runnerStr} · ${data.situation?.count && data.situation.count !== '0-0' ? `Starting count: <strong>${data.situation.count}</strong> · ` : ''}${data.n_simulations.toLocaleString()} simulations
           </div>
+          ${ctx.weather && !ctx.weather.is_indoor ? `
+          <div style="font-size:11px;color:#888;margin-top:5px;font-family:Courier New">
+            🌡️ ${ctx.weather.temperature_f?.toFixed(0)}\u00b0F
+            💨 ${ctx.weather.wind_speed_mph?.toFixed(0)}mph
+            ${ctx.weather.wind_hr_modifier > 1.02 ? '<span style="color:#1b5e20;font-weight:700">⬆️ HR+</span>' : ctx.weather.wind_hr_modifier < 0.98 ? '<span style="color:#b71c1c;font-weight:700">⬇️ HR-</span>' : ''}
+            <span style="color:#aaa">• ${ctx.weather.venue_name || ''}</span>
+          </div>` : ''}
+          ${data.splits_context && data.splits_context.state_label ? `
+          <div style="font-size:11px;color:#888;margin-top:4px;font-family:Courier New">
+            📊 ${data.splits_context.state_label}
+            <span style="color:#aaa">·</span> k_mult: <span style="color:${data.splits_context.k_mult>1.05?'#b71c1c':data.splits_context.k_mult<0.95?'#1b5e20':'#888'}">${data.splits_context.k_mult?.toFixed(3)}</span> &nbsp; bb_mult: <span style="color:${data.splits_context.bb_mult>1.05?'#1b5e20':data.splits_context.bb_mult<0.95?'#b71c1c':'#888'}">${data.splits_context.bb_mult?.toFixed(3)}</span>
+          </div>` : ''}
         </div>
         <div style="display:flex;gap:20px">
           ${ctx.goose_plus != null ? `
@@ -3266,7 +3863,7 @@ const PITCH_COLORS_HEX = {
   FC:0x8430ce, ST:0x00897b, CU:0x3949ab, FS:0x00acc1, KC:0x546e7a
 };
 
-let vizScene, vizCamera, vizRenderer, vizAnimFrame;
+let vizScene, vizCamera, vizRenderer, vizAnimFrame, vizControls;
 let vizPitchData = {};
 let vizSelectedPitch = null;
 let vizSelectedZone = null;
@@ -3342,7 +3939,19 @@ function selectZone(zoneKey, btnEl) {
 //   baseball x (lateral)          → Three.js x (lateral, unchanged)
 //   baseball z (height)           → Three.js y (height, standard y-up)
 //   baseball y (dist from plate)  → Three.js -z (depth, plate=0, mound=-50)
-function b2t(bx, by, bz) { return new THREE.Vector3(bx, bz, -by); }
+function b2t(bx, by, bz) { return new THREE.Vector3(bx, bz, -(by - 1.417)); }
+function gc_b2t(bx, by, bz) {
+    // baseball y=50 (release) → Three.js z=-50; y=0 (plate) → z=0
+    return new THREE.Vector3(-bx, bz, -by);
+}
+
+function resetVizCamera() {
+  if (!vizCamera || !vizControls) return;
+  vizCamera.position.set(0, 3.5, 5);
+  vizCamera.lookAt(0, 2.8, -55);
+  vizControls.target.set(0, 2.5, -10);
+  vizControls.update();
+}
 
 function initVizScene() {
   const canvas = document.getElementById('pitch-canvas');
@@ -3363,6 +3972,17 @@ function initVizScene() {
   vizRenderer.setSize(W, H);
   vizRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
+  vizControls = new THREE.OrbitControls(vizCamera, vizRenderer.domElement);
+  vizControls.enableDamping = true;
+  vizControls.dampingFactor = 0.08;
+  vizControls.enableZoom = true;
+  vizControls.zoomSpeed = 0.8;
+  vizControls.enablePan = false;
+  vizControls.minDistance = 3;
+  vizControls.maxDistance = 25;
+  vizControls.target.set(0, 2.5, -10);
+  vizControls.update();
+
   const ambient = new THREE.AmbientLight(0xffffff, 0.5);
   vizScene.add(ambient);
   const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
@@ -3374,6 +3994,7 @@ function initVizScene() {
 
   function loop() {
     vizAnimFrame = requestAnimationFrame(loop);
+    if (vizControls) vizControls.update();
     vizRenderer.render(vizScene, vizCamera);
   }
   loop();
@@ -3615,6 +4236,1137 @@ function updateVizStats(p) {
   const pfxZ = parseFloat(p.pfx_z);
   el.innerHTML = `<span style="font-family:'Courier New';color:#888">${p.avg_velo} mph · H:${pfxX>0?'+':''}${pfxX}" · V:${pfxZ>0?'+':''}${pfxZ}"</span>`;
 }
+// ── GAME COMPANION FUNCTIONS ──────────────────────────────────────────────────
+
+async function initGameCompanion() {
+  const pillsEl = document.getElementById('gc-game-pills');
+  if (!pillsEl || pillsEl.dataset.loaded) return;
+  pillsEl.dataset.loaded = '1';
+
+  try {
+    const r = await fetch(`${API}/mlb/schedule/today`);
+    const d = await r.json();
+    const games = d.games || [];
+
+    if (!games.length) {
+      pillsEl.innerHTML = '<div style="color:#888;font-size:13px">No games today</div>';
+      return;
+    }
+
+    pillsEl.innerHTML = games.map(g => {
+      const isLive = g.is_live;
+      const status = g.is_final ? 'FINAL' :
+                     isLive ? (g.inning_state ? g.inning_state.slice(0,3)+g.inning : 'LIVE') :
+                     g.status?.slice(0,8) || '';
+      return `<button onclick="loadGameCompanion(${g.game_pk})"
+                      id="gc-pill-${g.game_pk}"
+                      style="padding:6px 14px;border-radius:6px;cursor:pointer;
+                             font-size:12px;font-weight:700;
+                             background:${isLive?'#b71c1c':'#fff'};
+                             color:${isLive?'white':'#555'};
+                             border:1.5px solid ${isLive?'#b71c1c':'#d0d0d0'}">
+                ${g.away_abbrev} @ ${g.home_abbrev}
+                <span style="font-size:10px;opacity:0.8;margin-left:4px">${status}</span>
+              </button>`;
+    }).join('');
+
+    const liveGame = games.find(g => g.is_live);
+    if (liveGame && !gcGamePk) loadGameCompanion(liveGame.game_pk);
+
+  } catch(e) {
+    pillsEl.innerHTML = `<div style="color:#888">Error loading schedule</div>`;
+  }
+}
+
+
+async function loadGameCompanion(gamePk) {
+  gcGamePk = gamePk;
+  document.querySelectorAll('[id^="gc-pill-"]').forEach(b => {
+    b.style.outline = b.id === `gc-pill-${gamePk}` ? '2px solid #1a3a5c' : '';
+  });
+  const content = document.getElementById('gc-content');
+  if (!content) return;
+
+  content.innerHTML = `<div class="state-box"><div class="spinner"></div><div class="state-text">Loading game data...</div></div>`;
+
+  try {
+    const r = await fetch(`${API}/mlb/game/${gamePk}/summary`);
+    if (!r.ok) throw new Error(await r.text());
+    gcData = await r.json();
+    gcSelectedAbIndex = gcData.current_ab?.at_bat_index;
+    if (!gcData.weather) {
+      try {
+        const wRes = await fetch(`${API}/mlb/weather/today`);
+        const wData = wRes.ok ? await wRes.json() : null;
+        const gameWeather = wData?.games?.find(g => g.game_pk === gamePk);
+        if (gameWeather) gcData.weather = gameWeather;
+      } catch(e) {}
+    }
+    renderGameCompanion();
+  } catch(e) {
+    content.innerHTML = `<div class="state-box"><div class="state-text" style="color:#b71c1c">Error loading game: ${e.message}</div></div>`;
+  }
+}
+
+function renderGameCompanion() {
+  const content = document.getElementById('gc-content');
+  if (!content || !gcData) return;
+
+  content.innerHTML = `
+    <div id="gc-header"></div>
+    <div id="gc-players"></div>
+    <div style="display:grid;grid-template-columns:1fr 1.2fr 1fr;gap:12px;margin-top:12px">
+      <div>
+        <div id="gc-prob"></div>
+        <div id="gc-pitch-mix"></div>
+        <div id="gc-perf-chart"></div>
+      </div>
+      <div>
+        <div id="gc-3d"></div>
+        <div id="gc-lineup"></div>
+      </div>
+      <div>
+        <div id="gc-sequence"></div>
+        <div id="gc-splits"></div>
+      </div>
+    </div>`;
+
+  renderGCHeader();
+  renderGCPlayers();
+  renderGCProbability();
+  renderGCPitchMix();
+  renderGCPerformanceChart();
+  renderGC3D();
+  renderGCSequence();
+  renderGCSplits();
+  renderGCLineup();
+}
+
+async function renderGCLineup() {
+  const el = document.getElementById('gc-lineup');
+  if (!el || !gcData) return;
+  const game = gcData.game;
+  if (!game) { el.innerHTML = ''; return; }
+
+  const homeAbbrev = game.home_abbrev || 'HOME';
+  const awayAbbrev = game.away_abbrev || 'AWAY';
+  if (!window._gcLineupTeam) window._gcLineupTeam = 'home';
+  const side = window._gcLineupTeam;
+  const API = window.API || '/api';
+
+  // Build in-game stats map from at_bats (for players who have batted/pitched today)
+  const gameStats = {};
+  const gamePitchStats = {};
+  (gcData.at_bats || []).forEach(ab => {
+    if (ab.batter_id) {
+      if (!gameStats[ab.batter_id]) gameStats[ab.batter_id] = { pa:0, h:0, tb:0, k:0, bb:0 };
+      const g = gameStats[ab.batter_id]; g.pa++;
+      if (['Single','Double','Triple','Home Run'].includes(ab.event)) g.h++;
+      if (ab.event==='Single') g.tb+=1; if (ab.event==='Double') g.tb+=2;
+      if (ab.event==='Triple') g.tb+=3; if (ab.event==='Home Run') g.tb+=4;
+      if (['Strikeout','Strikeout - DP'].includes(ab.event)) g.k++;
+      if (['Walk','Intent Walk'].includes(ab.event)) g.bb++;
+    }
+    if (ab.pitcher_id) {
+      if (!gamePitchStats[ab.pitcher_id]) gamePitchStats[ab.pitcher_id] = { bf: 0 };
+      gamePitchStats[ab.pitcher_id].bf++;
+    }
+  });
+
+  // Fetch full lineup from MLB boxscore API (includes players not yet at bat)
+  let lineupBatters = [], lineupPitchers = [];
+  try {
+    const bsRes = await fetch(`https://statsapi.mlb.com/api/v1/game/${gcGamePk}/boxscore`);
+    if (bsRes.ok) {
+      const bs = await bsRes.json();
+      const teamData = bs.teams?.[side] || {};
+      const players  = teamData.players || {};
+
+      lineupBatters = (teamData.batters || [])
+        .map(id => {
+          const p = players[`ID${id}`] || {};
+          return { id, name: p.person?.fullName || `Player ${id}`, order: parseInt(p.battingOrder || 0) };
+        })
+        .filter(b => b.order > 0)
+        .sort((a, b) => a.order - b.order);
+
+      lineupPitchers = (teamData.pitchers || [])
+        .map(id => {
+          const p = players[`ID${id}`] || {};
+          return { id, name: p.person?.fullName || `Pitcher ${id}` };
+        });
+    }
+  } catch(e) {}
+
+  // Fallback: derive from at_bats if MLB API failed
+  if (!lineupBatters.length) {
+    const seen = {};
+    (gcData.at_bats || []).forEach(ab => {
+      const onHome = ab.half_inning === 'bottom';
+      const batterSide = onHome ? 'home' : 'away';
+      const pitcherSide = onHome ? 'away' : 'home';
+      if (ab.batter_id && batterSide === side && !seen[ab.batter_id]) {
+        seen[ab.batter_id] = true;
+        lineupBatters.push({ id: ab.batter_id, name: ab.batter_name || '', order: lineupBatters.length + 1 });
+      }
+      if (ab.pitcher_id && pitcherSide === side && !lineupPitchers.find(p => p.id === ab.pitcher_id)) {
+        lineupPitchers.push({ id: ab.pitcher_id, name: ab.pitcher_name || '' });
+      }
+    });
+  }
+
+  const batterIds  = lineupBatters.map(b => b.id);
+  const pitcherIds = lineupPitchers.map(p => p.id);
+
+  const [bStats, pStats] = await Promise.all([
+    batterIds.length  ? fetch(`${API}/mlb/lineup-stats/batters?ids=${batterIds.join(',')}&season=2026`).then(r=>r.ok?r.json():{}).catch(()=>({}))  : Promise.resolve({}),
+    pitcherIds.length ? fetch(`${API}/mlb/lineup-stats/pitchers?ids=${pitcherIds.join(',')}&season=2026`).then(r=>r.ok?r.json():{}).catch(()=>({})) : Promise.resolve({}),
+  ]);
+
+  const j2Color = v => v==null?'#888':v>=110?'#1b5e20':v<=90?'#b71c1c':'#555';
+  const g3Color = v => v==null?'#888':v>=105?'#1b5e20':v<=95?'#b71c1c':'#555';
+
+  const batterRows = lineupBatters.map(b => {
+    const s = bStats[b.id] || {};
+    const g = gameStats[b.id] || {};
+    const todayStr = g.pa > 0 ? `${g.pa}/${g.h}/${g.tb}` : '—';
+    return `<tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:3px 8px;font-size:11px;color:#999;width:16px">${b.order}</td>
+      <td style="padding:3px 8px;font-size:12px">${b.name.split(' ').pop()}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;color:#555">${todayStr}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-family:'Courier New'">${s.avg!=null?parseFloat(s.avg).toFixed(3):'—'}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-family:'Courier New'">${s.ops!=null?parseFloat(s.ops).toFixed(3):'—'}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-weight:700;color:${j2Color(s.juiced2_plus)}">${s.juiced2_plus!=null?parseFloat(s.juiced2_plus).toFixed(1):'—'}</td>
+    </tr>`;
+  }).join('');
+
+  const pitcherRows = lineupPitchers.map(p => {
+    const s = pStats[p.id] || {};
+    return `<tr style="border-bottom:1px solid #f0f0f0">
+      <td style="padding:3px 8px;font-size:12px">${p.name.split(' ').pop()}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-family:'Courier New'">${s.ip!=null?parseFloat(s.ip).toFixed(1):'—'}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;color:#b71c1c">${s.er??'—'}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-weight:700">${s.k??'—'}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-family:'Courier New'">${s.era!=null?parseFloat(s.era).toFixed(2):'—'}</td>
+      <td style="padding:3px 8px;text-align:right;font-size:11px;font-weight:700;color:${g3Color(s.goose3_plus)}">${s.goose3_plus!=null?parseFloat(s.goose3_plus).toFixed(1):'—'}</td>
+    </tr>`;
+  }).join('');
+
+  const tabBtn = (s, abbrev) =>
+    `<button onclick="setGCLineupTeam('${s}')"
+             style="flex:1;padding:7px;border:none;cursor:pointer;font-size:12px;font-weight:700;
+                    font-family:'Courier New',monospace;letter-spacing:0.05em;
+                    background:${window._gcLineupTeam===s?'#1a3a5c':'#f5f5f5'};
+                    color:${window._gcLineupTeam===s?'white':'#555'}">${abbrev}</button>`;
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-top:12px;overflow:hidden">
+      <div style="display:flex;border-bottom:1px solid #e0e0e0">
+        ${tabBtn('away', awayAbbrev)}${tabBtn('home', homeAbbrev)}
+      </div>
+      ${batterRows ? `<table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#f5f5f5">
+          <th style="padding:3px 8px;font-size:10px" colspan="2">BATTER</th>
+          <th style="text-align:right;padding:3px 8px;font-size:10px">TODAY</th>
+          <th style="text-align:right;padding:3px 8px;font-size:10px">AVG</th>
+          <th style="text-align:right;padding:3px 8px;font-size:10px">OPS</th>
+          <th style="text-align:right;padding:3px 8px;font-size:10px">J2+</th>
+        </tr></thead>
+        <tbody>${batterRows}</tbody>
+      </table>` : '<div style="padding:10px;font-size:11px;color:#888;text-align:center">Lineup not yet available</div>'}
+      ${pitcherRows ? `<div style="border-top:2px solid #e0e0e0">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:#f5f5f5">
+            <th style="text-align:left;padding:3px 8px;font-size:10px;text-transform:uppercase">PITCHER</th>
+            <th style="text-align:right;padding:3px 8px;font-size:10px">IP</th>
+            <th style="text-align:right;padding:3px 8px;font-size:10px">ER</th>
+            <th style="text-align:right;padding:3px 8px;font-size:10px">K</th>
+            <th style="text-align:right;padding:3px 8px;font-size:10px">ERA</th>
+            <th style="text-align:right;padding:3px 8px;font-size:10px">G3+</th>
+          </tr></thead>
+          <tbody>${pitcherRows}</tbody>
+        </table>
+      </div>` : ''}
+    </div>`;
+}
+
+function setGCLineupTeam(side) {
+  window._gcLineupTeam = side;
+  renderGCLineup();
+}
+
+function renderGCHeader() {
+  const el = document.getElementById('gc-header');
+  if (!el || !gcData) return;
+  const g = gcData.game;
+  const ab = gcData.current_ab;
+  const weather = gcData.weather;
+  const inningArrow = ab?.half_inning === 'top' ? '\u25b2' : '\u25bc';
+  const inning = ab?.inning || g.inning || '\u2014';
+  const outs = ab?.outs ?? 0;
+  const balls = ab?.balls ?? 0;
+  const strikes = ab?.strikes ?? 0;
+
+  el.innerHTML = `
+    <div style="background:#2a2a2a;color:white;padding:10px 16px;border-radius:8px 8px 0 0;font-family:'Courier New',monospace">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px">
+        <div style="font-weight:700">
+          ${g.away_abbrev||'\u2014'} (${g.away_score||0})
+          <span style="color:#aaa;margin:0 6px">@</span>
+          ${g.home_abbrev||'\u2014'} (${g.home_score||0})
+          <span style="color:#aaa;margin-left:12px">${inningArrow}${inning}</span>
+          <span style="color:#aaa;margin-left:12px">${balls}-${strikes}</span>
+          <span style="color:#aaa;margin-left:12px">${outs} Out${outs!==1?'s':''}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="font-size:12px;color:#ccc">
+            ${weather ? [
+              `${Math.round(weather.temperature_f || 0)}\u00b0F`,
+              weather.wind_speed_mph > 3 ? `${Math.round(weather.wind_speed_mph)}mph wind` : '',
+              weather.weather_condition || '',
+              weather.is_indoor ? '(Indoor)' : '',
+            ].filter(Boolean).join(' \u00b7 ') : 'Weather unavailable'}
+          </div>
+          <button onclick="loadGameCompanion(${gcGamePk})"
+                  style="padding:3px 10px;font-size:11px;font-weight:700;
+                         background:rgba(255,255,255,0.15);color:white;
+                         border:1px solid rgba(255,255,255,0.3);border-radius:4px;
+                         cursor:pointer;font-family:'Courier New',monospace;
+                         letter-spacing:0.05em"
+                  onmouseover="this.style.background='rgba(255,255,255,0.28)'"
+                  onmouseout="this.style.background='rgba(255,255,255,0.15)'">
+            &#x21BB; REFRESH
+          </button>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px">
+        <span style="background:#1a3a5c;padding:2px 8px;border-radius:3px;font-weight:700">
+          P: ${ab?.pitcher_name?.split(' ').pop()||'\u2014'}
+        </span>
+        <span style="background:#1a3a5c;padding:2px 8px;border-radius:3px;font-weight:700">
+          H: ${ab?.batter_name?.split(' ').pop()||'\u2014'}
+        </span>
+      </div>
+    </div>`;
+}
+
+async function loadJuicedSplitsForGC(batterId) {
+  try {
+    const r = await fetch(`${API}/mlb/hitter/${batterId}/juiced-splits?season=2026`);
+    return r.ok ? await r.json() : null;
+  } catch { return null; }
+}
+
+async function renderGCPlayers() {
+  const el = document.getElementById('gc-players');
+  if (!el || !gcData) return;
+  const ab = gcData.current_ab;
+  if (!ab) { el.innerHTML = ''; return; }
+
+  const pt = gcData.pitcher_today || {};
+  const bt = gcData.batter_today || {};
+  const g3 = gcData.goose3 || {};
+  const juiced = gcData.juiced || {};
+
+  if (!gcData._juicedSplits || gcData._juicedSplitsBatterId !== ab.batter_id) {
+    gcData._juicedSplits = await loadJuicedSplitsForGC(ab.batter_id);
+    gcData._juicedSplitsBatterId = ab.batter_id;
+  }
+  const juicedSplits = gcData._juicedSplits;
+
+  const totalOuts = parseInt(pt.outs_recorded || 0);
+  const ipFull = Math.floor(totalOuts / 3);
+  const ipRem = totalOuts % 3;
+  const ipStr = `${ipFull}.${ipRem}`;
+
+  const h = parseInt(bt.hits||0), abC = parseInt(bt.ab||0);
+  const doubles = parseInt(bt.doubles||0), triples = parseInt(bt.triples||0);
+  const hr = parseInt(bt.hr||0), bb = parseInt(bt.bb||0), k = parseInt(bt.k||0);
+  let batterLine = `${h}-${abC}`;
+  if (doubles) batterLine += ` ${doubles}2B`;
+  if (triples) batterLine += ` ${triples}3B`;
+  if (hr) batterLine += ` ${hr}HR`;
+  if (bb) batterLine += ` ${bb}BB`;
+  if (k) batterLine += ` ${k}K`;
+
+  const allAbs = gcData.at_bats || [];
+  const currentAbIdx = allAbs.findIndex(a => a.at_bat_index === gcSelectedAbIndex);
+  const currentAbData = allAbs[currentAbIdx];
+  let on1 = currentAbData?.on_first || false;
+  let on2 = currentAbData?.on_second || false;
+  let on3 = currentAbData?.on_third || false;
+  if (!currentAbData?.runners_reconstructed && currentAbIdx >= 0) {
+    const gameAb = gcData.current_ab;
+    if (gameAb && gameAb.at_bat_index === gcSelectedAbIndex) {
+      on1 = gameAb.on_first || false;
+      on2 = gameAb.on_second || false;
+      on3 = gameAb.on_third || false;
+    }
+  }
+  const dot = (on) => `<div style="width:14px;height:14px;border-radius:2px;background:${on?'#f5a623':'#555'};transform:rotate(45deg);border:1.5px solid #888"></div>`;
+
+  const recentBatters = gcData.recent_batters || [];
+  const onDeckIdx = recentBatters.findIndex(b => b.batter_id === ab.batter_id);
+  const onDeck = onDeckIdx > 0 ? recentBatters[onDeckIdx-1] : null;
+  const inHole = onDeckIdx > 1 ? recentBatters[onDeckIdx-2] : null;
+
+  const headshot = (id) => `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_213,q_auto:best/v1/people/${id}/headshot/67/current`;
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:0 0 8px 8px;padding:12px 16px;display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:center">
+      <div style="display:flex;gap:12px;align-items:center">
+        <img src="${headshot(ab.pitcher_id)}" style="width:60px;height:60px;border-radius:4px;border:1px solid #e0e0e0;object-fit:cover" onerror="this.style.display='none'">
+        <div style="font-family:'Courier New',monospace;font-size:12px;line-height:1.8">
+          <div style="font-size:13px;font-weight:700;color:#1a3a5c;font-family:'Times New Roman',serif">${ab.pitcher_name}</div>
+          <div style="color:#555">${pt.total_pitches||0} P / ${pt.strikes||0} S / ${pt.balls||0} B</div>
+          <div style="color:#555">${ipStr} IP / ${pt.hr||0} ER / ${pt.k||0} K / ${pt.bb||0} BB</div>
+          <div><span style="color:${scoreColor(g3.goose3_plus)}">${g3.goose3_plus||'\u2014'}</span> Goose+ / <span style="color:${scoreColor(g3.stuff_score)}">${g3.stuff_score||'\u2014'}</span> Stuff+</div>
+        </div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-family:'Courier New',monospace;font-size:22px;font-weight:700;color:#1a1a1a;margin-bottom:8px">${ab.balls||0} - ${ab.strikes||0}</div>
+        <div style="display:grid;grid-template-columns:repeat(3,20px);grid-template-rows:repeat(3,20px);gap:2px;width:fit-content;margin:0 auto">
+          <div></div>${dot(on2)}<div></div>
+          ${dot(on3)}<div></div>${dot(on1)}
+          <div></div><div style="width:14px;height:14px;border-radius:2px;background:#444;transform:rotate(45deg);border:1.5px solid #888"></div><div></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center;justify-content:flex-end">
+        <div style="font-family:'Courier New',monospace;font-size:12px;line-height:1.8;text-align:right">
+          <div style="font-size:13px;font-weight:700;color:#1a3a5c;font-family:'Times New Roman',serif">${ab.batter_name}</div>
+          <div style="color:#555">${batterLine}</div>
+          <div style="color:${(juiced.juiced_plus||100)>=100?'#1b5e20':'#b71c1c'}">
+            ${juicedSplits?.overall?.juiced2_plus?.toFixed(1) || juiced.juiced_plus || '\u2014'} Juiced+
+            ${juicedSplits?.vs_rhp ? `<span style="font-size:10px;color:#888;margin-left:4px">RHP:<strong style="color:${scoreColor(juicedSplits.vs_rhp.juiced_plus)}">${juicedSplits.vs_rhp.juiced_plus?.toFixed(1)}</strong></span>` : ''}
+            ${juicedSplits?.vs_lhp ? `<span style="font-size:10px;color:#888;margin-left:4px">LHP:<strong style="color:${scoreColor(juicedSplits.vs_lhp.juiced_plus)}">${juicedSplits.vs_lhp.juiced_plus?.toFixed(1)}</strong></span>` : ''}
+          </div>
+          <div style="font-size:11px;color:#888">
+            ${onDeck?`On Deck: ${onDeck.batter_name?.split(' ').pop()}`:''}
+            ${inHole?` \u00b7 Hole: ${inHole.batter_name?.split(' ').pop()}`:''}
+          </div>
+        </div>
+        <img src="${headshot(ab.batter_id)}" style="width:60px;height:60px;border-radius:4px;border:1px solid #e0e0e0;object-fit:cover" onerror="this.style.display='none'">
+      </div>
+    </div>`;
+}
+
+function renderGCProbability() {
+  const el = document.getElementById('gc-prob');
+  if (!el || !gcData) return;
+  const ab = gcData.at_bats?.find(a => a.at_bat_index === gcSelectedAbIndex);
+  if (!ab) { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px;margin-bottom:12px">
+      <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;color:#1a3a5c;margin-bottom:10px">Probability Outcome</div>
+      <div id="gc-prob-content"><div class="spinner"></div></div>
+    </div>`;
+
+  fetch(`${API}/mlb/simulate/at-bat`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      pitcher_id: ab.pitcher_id, batter_id: ab.batter_id,
+      n_simulations: 500, outs: ab.outs||0,
+      runners: {first:ab.on_first||false, second:ab.on_second||false, third:ab.on_third||false},
+      season: 2026, game_pk: gcGamePk
+    })
+  }).then(r=>r.json()).then(sim => {
+    const res = sim.results||{}, outcomes = sim.outcome_distribution||{}, splits = sim.splits_context||{};
+    const maxPct = Math.max(...Object.values(outcomes).map(o=>o.pct), 1);
+    const outcomeColors = {field_out:'#9e9e9e',strikeout:'#b71c1c',walk:'#1565c0',single:'#2e7d32',double:'#1b5e20',triple:'#0d47a1',home_run:'#e65100'};
+    const outcomeLabels = {field_out:'Field Out',strikeout:'Strikeout',walk:'Walk',single:'Single',double:'Double',triple:'Triple',home_run:'Home Run'};
+
+    const projRows = [['HR%',res.hr_pct,3.4],['K%',res.k_pct,22.0],['BB%',res.bb_pct,8.5],['Hit%',res.hit_pct,24.0]].map(([label,val,lg]) => `
+      <tr style="border-bottom:1px solid #eee">
+        <td style="padding:5px 8px;font-size:13px;font-weight:600;color:#1a1a1a">${label}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:Courier New;font-weight:700">${val?.toFixed(1)}%</td>
+        <td style="padding:5px 8px;text-align:right;font-family:Courier New;color:${val/lg*100>=110?'#1b5e20':val/lg*100<=90?'#b71c1c':'#555'}">${Math.round(val/lg*100)}</td>
+      </tr>`).join('');
+
+    const bars = Object.entries(outcomes).sort((a,b)=>b[1].pct-a[1].pct).map(([outcome,data]) => `
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
+        <div style="width:72px;font-size:11px;text-align:right;color:#444;font-weight:500">${outcomeLabels[outcome]||outcome}</div>
+        <div style="flex:1;background:#f0f0f0;border-radius:2px;height:18px;position:relative;overflow:hidden">
+          <div style="position:absolute;left:0;top:0;height:100%;width:${(data.pct/maxPct*100).toFixed(1)}%;background:${outcomeColors[outcome]||'#888'};opacity:0.85;border-radius:2px"></div>
+          <div style="position:absolute;left:5px;top:50%;transform:translateY(-50%);font-size:10px;font-weight:700;color:white">${data.pct.toFixed(1)}%</div>
+        </div>
+        <div style="width:32px;font-size:10px;color:#888;text-align:right">(${data.count})</div>
+      </div>`).join('');
+
+    const gcProbContent = document.getElementById('gc-prob-content');
+    if (gcProbContent) gcProbContent.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px">
+        <thead><tr style="background:#f5f5f5">
+          <th style="padding:5px 8px;text-align:left;font-weight:600;color:#444"></th>
+          <th style="padding:5px 8px;text-align:right;font-weight:600;color:#444">Proj</th>
+          <th style="padding:5px 8px;text-align:right;font-weight:600;color:#444">Rel ${splits.state_label?`<span style="font-weight:400;color:#888">(${splits.state_label})</span>`:''}</th>
+        </tr></thead>
+        <tbody>${projRows}</tbody>
+      </table>
+      <div style="font-family:'Times New Roman',serif;font-size:12px;font-weight:700;color:#555;margin-bottom:6px">Outcome Distribution</div>
+      ${bars}`;
+  }).catch(() => {
+    const el2 = document.getElementById('gc-prob-content');
+    if (el2) el2.innerHTML = `<div style="font-size:11px;color:#888">Simulation unavailable</div>`;
+  });
+}
+
+function renderGCPitchMix() {
+  const el = document.getElementById('gc-pitch-mix');
+  if (!el || !gcData) return;
+  const mix = gcData.pitch_mix_today || [];
+  if (!mix.length) { el.innerHTML = ''; return; }
+
+  const rows = mix.map((p,i) => `
+    <tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8;font-size:13px;color:#1a1a1a">
+      <td style="padding:6px 8px"><span style="background:${PITCH_COLORS[p.pitch_type_code]||'#888'};color:white;padding:1px 5px;border-radius:2px;font-size:10px;font-weight:700">${p.pitch_type_code}</span></td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_total}</td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_usage_pct}% <span style="color:#888;font-size:12px">(${p.season_usage_pct}%)</span></td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New;font-weight:700;color:${scoreColor(p.goose_plus)}">${p.goose_plus?.toFixed(0)||'\u2014'}</td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_velo} <span style="color:#888;font-size:12px">(${p.season_velo})</span></td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_ivb} <span style="color:#888;font-size:12px">(${p.season_ivb})</span></td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_hbreak} <span style="color:#888;font-size:12px">(${p.season_hbreak})</span></td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_whiff}% <span style="color:#888;font-size:12px">(${p.season_whiff}%)</span></td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_strikes}</td>
+      <td style="padding:6px 8px;text-align:right;font-family:Courier New">${p.today_balls}</td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
+      <div style="padding:10px 14px;font-family:'Times New Roman',serif;font-size:14px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #e0e0e0">
+        Pitch Mix Today <span style="font-weight:400;font-size:11px;color:#888">(Season)</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;min-width:500px">
+          <thead><tr style="background:#1a1a1a;color:white">
+            ${['Type','Total','Usage%','G+','Velo','IVB','Horiz','Whiff%','Str','Balls'].map(h=>`<th style="padding:6px 8px;text-align:${h==='Type'?'left':'right'};font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderGC3D() {
+  const el = document.getElementById('gc-3d');
+  if (!el || !gcData) return;
+  const abs = gcData.at_bats || [];
+  const paOptions = abs.map(ab => {
+    const half = ab.half_inning === 'top' ? '\u25b2' : '\u25bc';
+    const event = ab.event ? ` \u2014 ${ab.event}` : ' (In Progress)';
+    return `<option value="${ab.at_bat_index}" ${ab.at_bat_index===gcSelectedAbIndex?'selected':''}>
+      ${half}${ab.inning} ${ab.pitcher_name?.split(' ').pop()} vs ${ab.batter_name?.split(' ').pop()}${event}
+    </option>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;display:flex;flex-direction:column;height:100%">
+      <div style="padding:10px 14px;border-bottom:1px solid #e0e0e0;display:flex;align-items:center;justify-content:space-between">
+        <div style="font-family:'Times New Roman',serif;font-size:14px;font-weight:700;color:#1a3a5c">Pitch Sequence</div>
+        <select id="gc-pa-select" onchange="selectGCab(parseInt(this.value))"
+                style="padding:4px 8px;border:1px solid #d0d0d0;border-radius:4px;font-size:11px;background:#fff;max-width:200px">
+          ${paOptions}
+        </select>
+      </div>
+      <div style="position:relative">
+        <canvas id="gc-canvas" style="width:100%;height:420px;background:#1a1a2e;display:block"></canvas>
+        <button onclick="resetGCCamera()" style="position:absolute;bottom:8px;right:8px;padding:4px 10px;font-size:11px;background:rgba(0,0,0,0.5);color:white;border:1px solid rgba(255,255,255,0.3);border-radius:4px;cursor:pointer">&#8982; Reset</button>
+      </div>
+      <div id="gc-pitch-label" style="padding:6px 12px;font-size:11px;color:#888;font-family:'Courier New',monospace;border-top:1px solid #e0e0e0;min-height:26px">
+        Select a pitch from the sequence \u2192
+      </div>
+    </div>`;
+
+  if (gcAnimFrame) { cancelAnimationFrame(gcAnimFrame); gcAnimFrame = null; }
+  if (gcRenderer) { gcRenderer.dispose(); gcRenderer = null; }
+  gcScene = null; gcCamera = null;
+
+  if (window.THREE) {
+    initGC3D();
+    const selectedAb = abs.find(a => a.at_bat_index === gcSelectedAbIndex);
+    if (selectedAb?.pitches?.length) renderGCPitches(selectedAb.pitches);
+  }
+}
+
+function resetGCCamera() {
+  if (!gcCamera || !gcControls) return;
+  gcCamera.position.set(0, 3.5, 5);
+  gcCamera.lookAt(0, 2.8, -55);
+  gcControls.target.set(0, 2.5, -10);
+  gcControls.update();
+}
+
+function initGC3D() {
+  const canvas = document.getElementById('gc-canvas');
+  if (!canvas || !window.THREE) return;
+  const W = canvas.clientWidth || 400, H = 320;
+
+  gcScene = new THREE.Scene();
+  gcScene.background = new THREE.Color(0x1a1a2e);
+  gcScene.fog = new THREE.Fog(0x1a1a2e, 80, 120);
+
+  gcCamera = new THREE.PerspectiveCamera(45, W/H, 0.1, 200);
+  gcCamera.position.set(0, 3.5, 5);
+  gcCamera.lookAt(0, 2.8, -55);
+
+  gcRenderer = new THREE.WebGLRenderer({canvas, antialias:true});
+  gcRenderer.setSize(W, H);
+
+  gcControls = new THREE.OrbitControls(gcCamera, gcRenderer.domElement);
+  gcControls.enableDamping = true;
+  gcControls.dampingFactor = 0.08;
+  gcControls.enableZoom = true;
+  gcControls.zoomSpeed = 0.8;
+  gcControls.enablePan = false;
+  gcControls.minDistance = 3;
+  gcControls.maxDistance = 25;
+  gcControls.target.set(0, 2.5, -10);
+  gcControls.update();
+
+  gcScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+  dir.position.set(5, 20, 10);
+  gcScene.add(dir);
+
+  buildGCField();
+
+  function loop() {
+    gcAnimFrame = requestAnimationFrame(loop);
+    if (gcControls) gcControls.update();
+    if (gcRenderer && gcScene && gcCamera) gcRenderer.render(gcScene, gcCamera);
+  }
+  loop();
+}
+
+function buildGCField() {
+  if (!gcScene) return;
+
+  // Ground plane
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200), new THREE.MeshLambertMaterial({color:0x2d5a1b}));
+  ground.rotation.x = -Math.PI/2; ground.position.y = 0; gcScene.add(ground);
+
+  // Dirt infield
+  const dirt = new THREE.Mesh(new THREE.CircleGeometry(60,32), new THREE.MeshLambertMaterial({color:0x8B6914}));
+  dirt.rotation.x = -Math.PI/2; dirt.position.set(0, 0.01, -30); gcScene.add(dirt);
+
+  // Home plate
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(1.417, 0.05, 0.85), new THREE.MeshLambertMaterial({color:0xffffff}));
+  plate.position.set(0, 0.02, 0); gcScene.add(plate);
+
+  // Pitcher's mound
+  const mound = new THREE.Mesh(new THREE.CylinderGeometry(9,9,0.5,32), new THREE.MeshLambertMaterial({color:0x8B6914}));
+  mound.position.set(0, 0.25, -60); gcScene.add(mound);
+
+  // Pitcher's rubber
+  const rubber = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.1, 0.1), new THREE.MeshLambertMaterial({color:0xffffff}));
+  rubber.position.set(0, 0.55, -60); gcScene.add(rubber);
+
+  // Strike zone (wireframe)
+  const szMat = new THREE.MeshBasicMaterial({color:0x4488ff, wireframe:true, opacity:0.5, transparent:true});
+  const sz = new THREE.Mesh(new THREE.BoxGeometry(1.417, 1.85, 0.05), szMat);
+  sz.position.set(0, 2.5, 0); gcScene.add(sz);
+
+  // Zone grid lines
+  const gridMat = new THREE.LineBasicMaterial({color:0x4488ff, opacity:0.3, transparent:true});
+  [-0.308, 0.308].forEach(dz => {
+    const pts = [new THREE.Vector3(-0.708, 2.5+dz, 0), new THREE.Vector3(0.708, 2.5+dz, 0)];
+    gcScene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gridMat));
+  });
+  [-0.236, 0.236].forEach(dx => {
+    const pts = [new THREE.Vector3(dx, 1.57, 0), new THREE.Vector3(dx, 3.43, 0)];
+    gcScene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gridMat));
+  });
+
+  // Foul lines
+  const foulMat = new THREE.LineBasicMaterial({color:0xffffff, opacity:0.3, transparent:true});
+  [[-1, -180], [1, -180]].forEach(([side, z]) => {
+    const pts = [new THREE.Vector3(side*0.708, 0.05, 0), new THREE.Vector3(side*25, 0.05, z)];
+    gcScene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), foulMat));
+  });
+}
+
+function renderGCPitches(pitches, animateIdx=-1) {
+  if (!gcScene || !pitches?.length) return;
+  const toRemove = [];
+  gcScene.traverse(obj => { if (obj.name?.startsWith('gc-pitch')) toRemove.push(obj); });
+  toRemove.forEach(obj => gcScene.remove(obj));
+
+  pitches.forEach((pitch,i) => {
+    if (pitch.px == null || pitch.pz == null) return;
+    const color = PITCH_COLORS_HEX[pitch.pitch_type] || 0xffffff;
+    const isAnim = i === animateIdx;
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(isAnim?0.14:0.10,12,12),
+      new THREE.MeshLambertMaterial({color, opacity:isAnim?1.0:0.7, transparent:!isAnim})
+    );
+    dot.position.copy(b2t(parseFloat(pitch.px)||0, 0, parseFloat(pitch.pz)||2.5));
+    dot.name = `gc-pitch-dot-${i}`;
+    gcScene.add(dot);
+  });
+
+  if (animateIdx >= 0 && animateIdx < pitches.length) {
+    animateGCPitch(pitches[animateIdx], animateIdx);
+  }
+}
+
+function animateGCPitch(pitch, idx) {
+  if (!gcScene || !pitch.x0) return;
+
+  const toRemove = [];
+  gcScene.traverse(obj => {
+    if (obj.name === 'gc-trail' || obj.name === 'gc-ball') toRemove.push(obj);
+  });
+  toRemove.forEach(obj => gcScene.remove(obj));
+
+  const x0  = parseFloat(pitch.x0);
+  const y0  = parseFloat(pitch.y0);
+  const z0  = parseFloat(pitch.z0);
+  const vx0 = parseFloat(pitch.vx0);
+  const vy0 = parseFloat(pitch.vy0);
+  const vz0 = parseFloat(pitch.vz0);
+  const ax  = parseFloat(pitch.ax);
+  const ay  = parseFloat(pitch.ay);
+  const az  = parseFloat(pitch.az);
+
+  if (!y0 || !vy0) return;
+
+  // Solve 0.5*ay*t\u00b2 + vy0*t + y0 = 0 (identical to pitcher profile)
+  const disc = vy0*vy0 - 4*(0.5*ay)*y0;
+  if (disc < 0) return;
+  const t_plate = (-vy0 - Math.sqrt(disc)) / (2 * 0.5 * ay);
+
+  // Where physics puts the ball at plate crossing
+  const px_actual = x0 + vx0*t_plate + 0.5*ax*t_plate*t_plate;
+  const pz_actual = z0 + vz0*t_plate + 0.5*az*t_plate*t_plate;
+
+  // Use recorded Statcast plate location as target
+  const target_px = pitch.px ? parseFloat(pitch.px) : px_actual;
+  const target_pz = pitch.pz ? parseFloat(pitch.pz) : pz_actual;
+
+  // Scale trajectory to land at recorded location (same as pitcher profile)
+  const px_offset = px_actual - x0;
+  const pz_offset = pz_actual - z0;
+  const px_scale = px_offset !== 0 ? (target_px - x0) / px_offset : 1;
+  const pz_scale = pz_offset !== 0 ? (target_pz - z0) / pz_offset : 1;
+
+  const N = 60;
+  const trailPts = [];
+  for (let i = 0; i <= N; i++) {
+    const t = (t_plate * i) / N;
+    const bx = x0 + (vx0*t + 0.5*ax*t*t) * px_scale;
+    const by = y0 + vy0*t + 0.5*ay*t*t;
+    const bz = z0 + (vz0*t + 0.5*az*t*t) * pz_scale;
+    trailPts.push(b2t(bx, by, bz));
+  }
+
+  const color = PITCH_COLORS_HEX[pitch.pitch_type] || 0xffffff;
+
+  const trail = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(trailPts),
+    new THREE.LineBasicMaterial({ color, opacity: 0.4, transparent: true })
+  );
+  trail.name = 'gc-trail';
+  gcScene.add(trail);
+
+  const ball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.12, 16, 16),
+    new THREE.MeshLambertMaterial({ color })
+  );
+  ball.name = 'gc-ball';
+  ball.position.copy(trailPts[0]);
+  gcScene.add(ball);
+
+  const FRAMES = Math.round(t_plate * 110);
+  let frame = 0;
+
+  function step() {
+    if (frame >= FRAMES) {
+      const lbl = document.getElementById('gc-pitch-label');
+      if (lbl) lbl.textContent =
+        `${pitch.pitch_number}. ${GC_CALLS[pitch.call_code]||pitch.call_code} \u2014 ` +
+        `${pitch.velo} mph ${GC_PNAMES[pitch.pitch_type]||pitch.pitch_type}`;
+      return;
+    }
+    const i = Math.floor((frame / FRAMES) * N);
+    ball.position.copy(trailPts[Math.min(i, trailPts.length-1)]);
+    ball.rotation.x += 0.3;
+    ball.rotation.z += 0.1;
+    frame++;
+    requestAnimationFrame(step);
+  }
+  step();
+}
+
+function renderGCPerformanceChart() {
+  const el = document.getElementById('gc-perf-chart');
+  if (!el || !gcData) return;
+
+  const abs = gcData.at_bats || [];
+  if (abs.length < 2) {
+    el.innerHTML = '<div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px;margin-top:10px;font-size:12px;color:#888;text-align:center">Chart available once game is underway</div>';
+    return;
+  }
+
+  const METRICS = {
+    'velo':       { label: 'Velocity',  color: '#1a3a5c', unit: 'mph',
+      fn: pitches => pitches?.length ? pitches.reduce((s,p) => s+(p.velo||0), 0)/pitches.length : null },
+    'whiff_pct':  { label: 'Whiff%',    color: '#b71c1c', unit: '%',
+      fn: pitches => {
+        if (!pitches?.length) return null;
+        const sw = pitches.filter(p => ['S','W','T','F','X'].includes(p.call_code)).length;
+        const wh = pitches.filter(p => ['S','W','T'].includes(p.call_code)).length;
+        return sw > 0 ? wh/sw*100 : null;
+      }},
+    'csw_pct':    { label: 'CSW%',      color: '#2e7d32', unit: '%',
+      fn: pitches => pitches?.length ?
+        pitches.filter(p => ['C','S','W','T'].includes(p.call_code)).length / pitches.length * 100 : null },
+    'strike_pct': { label: 'Strike%',   color: '#e65100', unit: '%',
+      fn: pitches => pitches?.length ?
+        pitches.filter(p => ['C','S','W','T','F','X'].includes(p.call_code)).length / pitches.length * 100 : null },
+  };
+
+  if (!window._gcChartState) window._gcChartState = { metrics: ['velo', 'csw_pct'], xAxis: 'inning', pitcherId: null, pitchType: 'ALL' };
+  const state = window._gcChartState;
+
+  // Build pitcher list and pitch type list from game data
+  const pitcherMap = {};
+  abs.forEach(ab => {
+    if (ab.pitcher_id && ab.pitcher_name) pitcherMap[ab.pitcher_id] = ab.pitcher_name;
+  });
+  const pitcherList = Object.entries(pitcherMap);
+
+  const pitchTypeSet = new Set(['ALL']);
+  abs.forEach(ab => {
+    if (!state.pitcherId || ab.pitcher_id === state.pitcherId)
+      (ab.pitches || []).forEach(p => { if (p.pitch_type) pitchTypeSet.add(p.pitch_type); });
+  });
+  if (state.pitchType !== 'ALL' && !pitchTypeSet.has(state.pitchType)) state.pitchType = 'ALL';
+
+  // Filter abs by selected pitcher
+  const filteredAbs = abs.filter(ab => !state.pitcherId || ab.pitcher_id === state.pitcherId);
+
+  // Pitch filter function
+  const filterPitches = pitches => state.pitchType === 'ALL'
+    ? (pitches || [])
+    : (pitches || []).filter(p => p.pitch_type === state.pitchType);
+
+  let dataPoints = [];
+  if (state.xAxis === 'inning') {
+    const byInning = {};
+    filteredAbs.forEach(ab => {
+      const key = `${ab.half_inning === 'top' ? '▲' : '▼'}${ab.inning}`;
+      if (!byInning[key]) byInning[key] = { pitches: [], label: key, inning: ab.inning, half: ab.half_inning };
+      filterPitches(ab.pitches).forEach(p => byInning[key].pitches.push(p));
+    });
+    dataPoints = Object.values(byInning).sort((a,b) => a.inning - b.inning || (a.half === 'top' ? -1 : 1));
+  } else {
+    let cum = 0;
+    const raw = [];
+    filteredAbs.forEach(ab => filterPitches(ab.pitches).forEach(p => { cum++; raw.push({pitches:[p], label:String(cum)}); }));
+    for (let i = 0; i < raw.length; i += 5) {
+      const chunk = raw.slice(i, i+5);
+      dataPoints.push({ pitches: chunk.flatMap(c=>c.pitches), label: `${i+1}-${Math.min(i+5,raw.length)}` });
+    }
+  }
+
+  if (dataPoints.length < 2) {
+    if (state.pitcherId || state.pitchType !== 'ALL') {
+      state.pitcherId = null;
+      state.pitchType = 'ALL';
+      renderGCPerformanceChart();
+      return;
+    }
+    el.innerHTML = '<div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px;margin-top:10px;font-size:12px;color:#888;text-align:center">Not enough pitch data for chart</div>';
+    return;
+  }
+
+  const series = {};
+  state.metrics.forEach(k => {
+    series[k] = dataPoints.map(dp => METRICS[k].fn(dp.pitches));
+  });
+
+  const W = 460, H = 180, pad = { top: 12, right: 20, bottom: 28, left: 38 };
+  const cW = W - pad.left - pad.right, cH = H - pad.top - pad.bottom;
+  const allVals = state.metrics.flatMap(m => series[m].filter(v => v != null));
+  if (!allVals.length) {
+    el.innerHTML = '<div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:14px;margin-top:10px;font-size:12px;color:#888;text-align:center">No metric data for selected filters</div>';
+    return;
+  }
+  const minV = Math.min(...allVals) * 0.95, maxV = Math.max(...allVals) * 1.05;
+  const xS = i => pad.left + (i / (dataPoints.length - 1)) * cW;
+  const yS = v => pad.top + cH - ((v - minV) / (maxV - minV || 1)) * cH;
+
+  let svg = '';
+  const ySteps = 4;
+  for (let i = 0; i <= ySteps; i++) {
+    const v = minV + (maxV - minV) * (i / ySteps);
+    const y = yS(v);
+    svg += `<line x1="${pad.left}" y1="${y.toFixed(1)}" x2="${W-pad.right}" y2="${y.toFixed(1)}" stroke="#eee" stroke-width="1"/>`;
+    svg += `<text x="${pad.left-4}" y="${(y+3).toFixed(1)}" text-anchor="end" font-size="9" fill="#888">${v.toFixed(0)}</text>`;
+  }
+  state.metrics.forEach(k => {
+    const m = METRICS[k], vals = series[k];
+    const pts = vals.map((v,i) => v != null ? `${xS(i).toFixed(1)},${yS(v).toFixed(1)}` : null).filter(Boolean);
+    if (pts.length < 2) return;
+    svg += `<polyline points="${pts.join(' ')}" fill="none" stroke="${m.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>`;
+    vals.forEach((v,i) => {
+      if (v == null) return;
+      svg += `<circle cx="${xS(i).toFixed(1)}" cy="${yS(v).toFixed(1)}" r="3" fill="${m.color}" opacity="0.8"><title>${m.label}: ${v.toFixed(1)}${m.unit}</title></circle>`;
+    });
+  });
+  const step = Math.ceil(dataPoints.length / 8);
+  dataPoints.forEach((dp, i) => {
+    if (i % step !== 0 && i !== dataPoints.length-1) return;
+    svg += `<text x="${xS(i).toFixed(1)}" y="${H-5}" text-anchor="middle" font-size="9" fill="#888">${dp.label}</text>`;
+  });
+
+  const metricBtns = Object.entries(METRICS).map(([k,m]) =>
+    `<button onclick="toggleGCMetric('${k}')" style="padding:2px 7px;font-size:10px;border-radius:3px;cursor:pointer;border:1.5px solid ${m.color};background:${state.metrics.includes(k)?m.color:'#fff'};color:${state.metrics.includes(k)?'white':m.color};font-weight:600;margin:2px">${m.label}</button>`
+  ).join('');
+  const xBtns = ['inning','pitch'].map(x =>
+    `<button onclick="setGCXAxis('${x}')" style="padding:2px 7px;font-size:10px;border-radius:3px;cursor:pointer;background:${state.xAxis===x?'#1a3a5c':'#fff'};color:${state.xAxis===x?'white':'#555'};border:1px solid ${state.xAxis===x?'#1a3a5c':'#d0d0d0'};font-weight:600;margin:2px">By ${x.charAt(0).toUpperCase()+x.slice(1)}</button>`
+  ).join('');
+  const legend = state.metrics.map(k =>
+    `<div style="display:flex;align-items:center;gap:4px"><div style="width:16px;height:2px;background:${METRICS[k].color}"></div><span style="font-size:10px;color:#555">${METRICS[k].label}</span></div>`
+  ).join('');
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:10px;margin-top:10px">
+      <div style="font-family:'Times New Roman',serif;font-size:14px;font-weight:700;color:#1a3a5c;margin-bottom:6px">Performance Chart</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center">
+        <select onchange="setGCChartPitcher(this.value)"
+                style="padding:3px 6px;border:1px solid #d0d0d0;border-radius:4px;font-size:11px;font-family:'Courier New',monospace">
+          <option value="">All Pitchers</option>
+          ${pitcherList.map(([id,name]) => `<option value="${id}"${state.pitcherId===parseInt(id)?'selected':''}>${name.split(' ').pop()}</option>`).join('')}
+        </select>
+        <select onchange="setGCChartPitchType(this.value)"
+                style="padding:3px 6px;border:1px solid #d0d0d0;border-radius:4px;font-size:11px;font-family:'Courier New',monospace">
+          ${[...pitchTypeSet].map(t => `<option value="${t}"${state.pitchType===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px;margin-bottom:6px">
+        <div>${metricBtns}</div><div>${xBtns}</div>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px">${legend}</div>
+      <svg width="${W}" height="${H}" style="max-width:100%;overflow:visible">${svg}</svg>
+      <div style="text-align:center;font-size:10px;color:#888;margin-top:2px">${state.xAxis==='inning'?'Inning':'Pitches (groups of 5)'}</div>
+    </div>`;
+}
+
+function toggleGCMetric(key) {
+  if (!window._gcChartState) return;
+  const s = window._gcChartState;
+  const i = s.metrics.indexOf(key);
+  if (i >= 0) { if (s.metrics.length > 1) s.metrics.splice(i, 1); }
+  else s.metrics.push(key);
+  renderGCPerformanceChart();
+}
+
+function setGCChartPitcher(pitcherId) {
+  if (!window._gcChartState) return;
+  window._gcChartState.pitcherId = pitcherId ? parseInt(pitcherId) : null;
+  window._gcChartState.pitchType = 'ALL';
+  renderGCPerformanceChart();
+}
+
+function setGCChartPitchType(pitchType) {
+  if (!window._gcChartState) return;
+  window._gcChartState.pitchType = pitchType || 'ALL';
+  renderGCPerformanceChart();
+}
+
+function setGCXAxis(axis) {
+  if (!window._gcChartState) return;
+  window._gcChartState.xAxis = axis;
+  renderGCPerformanceChart();
+}
+
+function renderGCSequence() {
+  const el = document.getElementById('gc-sequence');
+  if (!el || !gcData) return;
+  const ab = gcData.at_bats?.find(a => a.at_bat_index === gcSelectedAbIndex);
+  if (!ab) { el.innerHTML = ''; return; }
+  const pitches = ab.pitches || [];
+
+  const rows = pitches.map((p,i) => {
+    const callColor = GC_CALL_COLORS[p.call_code] || '#555';
+    return `<div onclick="selectGCPitch(${i})" id="gc-seq-${i}"
+                 style="display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;border-bottom:1px solid #f0f0f0"
+                 onmouseover="this.style.background='#f5f5f5'" onmouseout="this.style.background='white'">
+      <div style="width:20px;height:20px;border-radius:50%;background:${callColor};color:white;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${p.pitch_number}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;color:#1a1a1a">${GC_CALLS[p.call_code]||p.call_code}</div>
+        <div style="font-size:12px;color:#555">
+          ${p.velo} mph
+          <span style="background:${PITCH_COLORS[p.pitch_type]||'#888'};color:white;padding:0 4px;border-radius:2px;font-size:9px;font-weight:700;margin-left:2px">${p.pitch_type}</span>
+        </div>
+      </div>
+      <div style="font-family:'Courier New',monospace;font-size:12px;color:#333;flex-shrink:0">${p.balls_before??0}-${p.strikes_before??0}</div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:12px;overflow:hidden">
+      <div style="padding:10px 14px;font-family:'Times New Roman',serif;font-size:14px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #e0e0e0">Pitch Sequence</div>
+      <div style="max-height:200px;overflow-y:auto">
+        ${rows||'<div style="padding:12px;font-size:12px;color:#888">No pitches yet</div>'}
+      </div>
+    </div>`;
+}
+
+function renderGCSplits() {
+  const el = document.getElementById('gc-splits');
+  if (!el || !gcData) return;
+  const ab = gcData.current_ab;
+  if (!ab) { el.innerHTML = ''; return; }
+
+  el.innerHTML = '<div class="spinner"></div>';
+
+  // Compute current TTO: how many prior ABs this batter had vs this pitcher today
+  const priorABs = (gcData.at_bats || []).filter(a =>
+    a.batter_id === ab.batter_id &&
+    a.pitcher_id === ab.pitcher_id &&
+    a.at_bat_index < ab.at_bat_index
+  ).length;
+  const currentTTO = Math.min(3, priorABs + 1);
+
+  const splitsUrl = `${API}/mlb/game/${gcGamePk}/batter-splits/${ab.batter_id}` +
+    `?pitcher_id=${ab.pitcher_id || ''}` +
+    `&outs=${ab.outs ?? 0}` +
+    `&on_first=${ab.on_first || false}` +
+    `&on_second=${ab.on_second || false}` +
+    `&on_third=${ab.on_third || false}`;
+
+  const ttoUrl = ab.pitcher_id
+    ? `${API}/mlb/pitcher/${ab.pitcher_id}/context-splits?season=2026`
+    : null;
+
+  Promise.all([
+    fetch(splitsUrl).then(r => r.json()).catch(() => null),
+    ttoUrl ? fetch(ttoUrl).then(r => r.ok ? r.json() : null).catch(() => null) : Promise.resolve(null),
+  ]).then(([splits, pitcherSplits]) => {
+      const buildTable = (title, rows, valKey, showRaw=false) => {
+        const rHtml = rows.map(r => `
+          <tr style="border-bottom:1px solid #eee">
+            <td style="padding:6px 10px;font-size:12px;color:#1a1a1a;font-weight:500">
+              ${r.label}
+              ${r.pa ? `<span style="font-size:10px;color:#aaa;margin-left:4px">(${r.pa} PA)</span>` : ''}
+            </td>
+            ${showRaw && r.ops != null ? `
+            <td style="padding:6px 10px;text-align:right;font-family:Courier New;font-size:11px;color:#555">
+              ${r.ops?.toFixed(3) || '\u2014'}
+            </td>` : '<td></td>'}
+            <td style="padding:6px 10px;text-align:right;font-family:Courier New;font-size:13px;font-weight:700;color:${(r[valKey]||100)>=110?'#1b5e20':(r[valKey]||100)<=90?'#b71c1c':'#555'}">
+              ${r[valKey]?.toFixed(0)||'\u2014'}
+            </td>
+          </tr>`).join('');
+        return `<div style="border-radius:6px;overflow:hidden;margin-bottom:8px">
+          <div style="background:#1a1a1a;color:white;padding:7px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;display:flex;justify-content:space-between">
+            <span>${title}</span>
+            ${showRaw ? '<span style="font-weight:400;font-size:10px;opacity:0.7">OPS / Index</span>' : ''}
+          </div>
+          <table style="width:100%;border-collapse:collapse;background:#fff"><tbody>${rHtml}</tbody></table>
+        </div>`;
+      };
+
+      // TTO degradation widget
+      const ttoKeys = [
+        { key: 'tto_1',     label: '1st Time', tto: 1 },
+        { key: 'tto_2',     label: '2nd Time', tto: 2 },
+        { key: 'tto_3plus', label: '3rd+ Time', tto: 3 },
+      ];
+      const ttoHtml = pitcherSplits ? (() => {
+        const rows = ttoKeys.map(({ key, label, tto }) => {
+          const s = pitcherSplits[key];
+          if (!s) return '';
+          const isActive = tto === currentTTO;
+          const kPct = s.k_pct != null ? parseFloat(s.k_pct) : null;
+          const hrPct = s.hr_pct != null ? parseFloat(s.hr_pct) : null;
+          const kColor = kPct != null
+            ? (kPct >= 26 ? '#1b5e20' : kPct >= 20 ? '#555' : '#b71c1c') : '#aaa';
+          return `<tr style="border-bottom:1px solid #eee;background:${isActive ? '#eef2f7' : '#fff'}">
+            <td style="padding:6px 10px;font-size:12px;font-weight:${isActive?'700':'500'};color:${isActive?'#1a3a5c':'#333'}">
+              ${label}
+              ${isActive ? '<span style="font-size:9px;background:#1a3a5c;color:#fff;border-radius:3px;padding:1px 4px;margin-left:4px">NOW</span>' : ''}
+              <span style="font-size:10px;color:#aaa;margin-left:4px">(${s.pa} PA)</span>
+            </td>
+            <td style="padding:6px 10px;text-align:right;font-family:Courier New;font-size:13px;font-weight:700;color:${kColor}">
+              ${kPct != null ? kPct.toFixed(1) + '%' : '\u2014'}
+            </td>
+            <td style="padding:6px 10px;text-align:right;font-family:Courier New;font-size:11px;color:#888">
+              ${hrPct != null ? hrPct.toFixed(1) + '%' : '\u2014'}
+            </td>
+          </tr>`;
+        }).join('');
+        if (!rows.trim()) return '';
+        return `<div style="border-radius:6px;overflow:hidden;margin-bottom:8px">
+          <div style="background:#1a3a5c;color:white;padding:7px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;display:flex;justify-content:space-between;align-items:center">
+            <span>TTO Degradation</span>
+            <span style="font-weight:400;font-size:10px;opacity:0.7">K% / HR%</span>
+          </div>
+          <table style="width:100%;border-collapse:collapse"><tbody>${rows}</tbody></table>
+        </div>`;
+      })() : '';
+
+      const gsHtml = splits?.game_state_split ? `
+        <div style="border-radius:6px;overflow:hidden;margin-bottom:8px">
+          <div style="background:#4a4a4a;color:white;padding:7px 10px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em">
+            ${splits.game_state_split.label}
+          </div>
+          <table style="width:100%;border-collapse:collapse;background:#fff">
+            <tr style="border-bottom:1px solid #eee">
+              <td style="padding:5px 10px;font-size:12px;color:#555">AVG</td>
+              <td style="padding:5px 10px;text-align:right;font-family:Courier New;font-weight:700">${splits.game_state_split.avg?.toFixed(3)}</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eee">
+              <td style="padding:5px 10px;font-size:12px;color:#555">OPS</td>
+              <td style="padding:5px 10px;text-align:right;font-family:Courier New;font-weight:700">${splits.game_state_split.ops?.toFixed(3)}</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eee">
+              <td style="padding:5px 10px;font-size:12px;color:#555">K%</td>
+              <td style="padding:5px 10px;text-align:right;font-family:Courier New;font-weight:700">${(splits.game_state_split.k_rate * 100).toFixed(1)}%</td>
+            </tr>
+            <tr>
+              <td style="padding:5px 10px;font-size:12px;color:#555">HR%</td>
+              <td style="padding:5px 10px;text-align:right;font-family:Courier New;font-weight:700">${(splits.game_state_split.hr_rate * 100).toFixed(1)}%</td>
+            </tr>
+          </table>
+        </div>` : '';
+
+      el.innerHTML = `
+        <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden">
+          <div style="padding:10px 14px;font-family:'Times New Roman',serif;font-size:14px;font-weight:700;color:#1a3a5c;border-bottom:1px solid #e0e0e0">Splits (Season)</div>
+          <div style="padding:10px">
+            ${ttoHtml}
+            ${gsHtml}
+            ${splits ? buildTable('OPS+', splits.ops_splits||[], 'value', true) : ''}
+            ${splits ? buildTable('Juiced+', splits.juiced_splits||[], 'value') : ''}
+          </div>
+        </div>`;
+    }).catch(() => {
+      el.innerHTML = `<div style="font-size:11px;color:#888;padding:10px">Splits unavailable</div>`;
+    });
+}
+
+function selectGCab(abIndex) {
+  gcSelectedAbIndex = abIndex;
+  renderGCPlayers();
+  renderGCProbability();
+  renderGC3D();
+  renderGCSequence();
+  renderGCSplits();
+}
+
+function selectGCPitch(pitchIdx) {
+  const ab = gcData?.at_bats?.find(a => a.at_bat_index === gcSelectedAbIndex);
+  if (!ab?.pitches) return;
+  ab.pitches.forEach((_,i) => {
+    const row = document.getElementById(`gc-seq-${i}`);
+    if (row) row.style.background = i===pitchIdx ? '#eef2f7' : 'white';
+  });
+  renderGCPitches(ab.pitches, pitchIdx);
+}
+
 </script>
 </body>
 </html>

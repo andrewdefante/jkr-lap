@@ -18,11 +18,25 @@ LEAGUE_CHASE = 0.310
 LEAGUE_HR_RATE = 0.034
 LEAGUE_AVG_BATTER_WHIFF = 0.267
 
+LG_K_PCT  = 22.0   # league strikeout rate (%)
+LG_BB_PCT =  8.5   # league walk rate (%)
+LG_HR_PCT =  3.5   # league HR rate (%)
+TTO_REG   = 30     # PA regression constant for TTO splits
+
 FASTBALL_TYPES = {'FF', 'SI', 'FC'}
 OFFSPEED_TYPES = {'CH', 'FS'}
 BREAKING_TYPES = {'SL', 'ST', 'CU', 'KC'}
 
 MIN_COUNT_PITCHES = 15
+
+# Total swing rates by count — calibrated from 2026 MLB pitch data.
+# Decouples swing decision from the in_zone CSW proxy (which over-swings in
+# early counts and under-swings in 2-strike counts, compressing K rates).
+COUNT_SWING_RATE = {
+    (0, 0): 0.316, (1, 0): 0.422, (2, 0): 0.398, (3, 0): 0.076,
+    (0, 1): 0.497, (1, 1): 0.548, (2, 1): 0.583, (3, 1): 0.520,
+    (0, 2): 0.534, (1, 2): 0.601, (2, 2): 0.651, (3, 2): 0.715,
+}
 
 # Module-level cache for league mix (computed once per process)
 _league_mix_cache = None
@@ -49,10 +63,14 @@ def load_pitcher_count_mix(pitcher_id: int, bat_side: str, db: Session) -> dict:
     Load pitcher's count-specific mix from pitcher_count_mix table.
     Returns dict keyed by (balls, strikes) → list of pitch dicts.
     Falls back to league average for counts with insufficient data.
+
+    When no 2026 count-mix data exists (pitcher below build threshold), scales
+    the 2025 whiff/CSW rates using 2026 vs 2025 pitcher_mix_profile ratios so
+    current-season stuff changes are reflected.
     """
     sql = text("""
         SELECT balls, strikes, pitch_type_code,
-               usage_pct, whiff_rate, csw_rate, avg_velo, pitches
+               usage_pct, whiff_rate, csw_rate, avg_velo, pitches, season
         FROM mlb.pitcher_count_mix
         WHERE pitcher_id = :pid
         AND bat_side = :side
@@ -60,6 +78,36 @@ def load_pitcher_count_mix(pitcher_id: int, bat_side: str, db: Session) -> dict:
         ORDER BY season DESC, balls, strikes, usage_pct DESC
     """)
     rows = db.execute(sql, {"pid": pitcher_id, "side": bat_side}).mappings().all()
+
+    has_2026 = any(int(r['season']) == 2026 for r in rows)
+
+    # Build per-pitch-type scaling factors when falling back to 2025 data
+    whiff_scales: dict = {}
+    csw_scales: dict = {}
+    if not has_2026 and rows:
+        profile_rows = db.execute(text("""
+            SELECT pitch_type_code, whiff_rate, csw_rate, season
+            FROM mlb.pitcher_mix_profile
+            WHERE pitcher_id = :pid AND bat_side = :side
+            AND season IN (2025, 2026)
+        """), {"pid": pitcher_id, "side": bat_side}).mappings().all()
+
+        by_season: dict = {2025: {}, 2026: {}}
+        for pr in profile_rows:
+            s = int(pr['season'])
+            by_season[s][pr['pitch_type_code']] = pr
+
+        for pt, p26 in by_season[2026].items():
+            p25 = by_season[2025].get(pt)
+            if p25:
+                w25 = float(p25['whiff_rate'] or LEAGUE_WHIFF)
+                w26 = float(p26['whiff_rate'] or LEAGUE_WHIFF)
+                c25 = float(p25['csw_rate'] or 0.28)
+                c26 = float(p26['csw_rate'] or 0.28)
+                if w25 > 0:
+                    whiff_scales[pt] = max(0.5, min(2.0, w26 / w25))
+                if c25 > 0:
+                    csw_scales[pt] = max(0.5, min(2.0, c26 / c25))
 
     count_mix = {}
     seen = set()
@@ -71,11 +119,18 @@ def load_pitcher_count_mix(pitcher_id: int, bat_side: str, db: Session) -> dict:
             seen.add(entry_key)
             if key not in count_mix:
                 count_mix[key] = []
+
+            base_whiff = float(r['whiff_rate'] or LEAGUE_WHIFF)
+            base_csw = float(r['csw_rate'] or 0.28)
+            if not has_2026 and whiff_scales:
+                base_whiff = min(0.90, base_whiff * whiff_scales.get(pt, 1.0))
+                base_csw = min(0.90, base_csw * csw_scales.get(pt, 1.0))
+
             count_mix[key].append({
                 "pitch_type": pt,
                 "prob": float(r['usage_pct']),
-                "whiff_rate": float(r['whiff_rate'] or LEAGUE_WHIFF),
-                "csw_rate": float(r['csw_rate'] or 0.28),
+                "whiff_rate": base_whiff,
+                "csw_rate": base_csw,
                 "avg_velo": float(r['avg_velo'] or 90.0),
                 "pitches": int(r['pitches']),
             })
@@ -326,11 +381,91 @@ def load_combined_pitcher_adjustments(pitcher_id: int, bat_side: str,
     return combined
 
 
+def load_pk_phr_adjustments(pitcher_id: int, bat_side: str,
+                             db: Session) -> dict:
+    """
+    Load pK+ (whiff signal) and pHR+ (contact signal) per pitch type.
+    pK+  → whiff_mult/csw_mult  (best K rate predictor, r=0.473)
+    pHR+ → contact_mult/hr_mult (best HR predictor, r=-0.311 SLG)
+    """
+    sql = text("""
+        SELECT
+            COALESCE(pk.pitch_type_code, phr.pitch_type_code) AS pitch_type_code,
+            pk.pk_plus,
+            phr.phr_plus,
+            so.stuff_score,
+            COALESCE(pk.pitches, phr.pitches) AS pitches
+        FROM mlb.pk_scores pk
+        FULL OUTER JOIN mlb.phr_scores phr
+            ON  phr.pitcher_id     = pk.pitcher_id
+            AND phr.pitch_type_code = pk.pitch_type_code
+            AND phr.bat_side        = pk.bat_side
+            AND phr.season          = pk.season
+        LEFT JOIN mlb.stuff_scores so
+            ON  so.pitcher_id      = COALESCE(pk.pitcher_id, phr.pitcher_id)
+            AND so.pitch_type_code = COALESCE(pk.pitch_type_code, phr.pitch_type_code)
+            AND so.season          = COALESCE(pk.season, phr.season)
+        WHERE COALESCE(pk.pitcher_id, phr.pitcher_id) = :pid
+        AND   COALESCE(pk.season, phr.season) = 2026
+        AND   COALESCE(pk.bat_side, phr.bat_side) = :side
+        AND   COALESCE(pk.pitches, phr.pitches) >= 10
+    """)
+    rows = db.execute(sql, {"pid": pitcher_id, "side": bat_side}).mappings().all()
+
+    if not rows:
+        sql2 = text("""
+            SELECT pk.pitch_type_code,
+                   AVG(pk.pk_plus)   AS pk_plus,
+                   AVG(phr.phr_plus) AS phr_plus,
+                   AVG(so.stuff_score) AS stuff_score,
+                   SUM(pk.pitches)   AS pitches
+            FROM mlb.pk_scores pk
+            LEFT JOIN mlb.phr_scores phr
+                ON  phr.pitcher_id     = pk.pitcher_id
+                AND phr.pitch_type_code = pk.pitch_type_code
+                AND phr.season          = pk.season
+            LEFT JOIN mlb.stuff_scores so
+                ON  so.pitcher_id      = pk.pitcher_id
+                AND so.pitch_type_code = pk.pitch_type_code
+                AND so.season          = pk.season
+            WHERE pk.pitcher_id = :pid AND pk.season = 2026
+            GROUP BY pk.pitch_type_code
+            HAVING SUM(pk.pitches) >= 10
+        """)
+        rows = db.execute(sql2, {"pid": pitcher_id}).mappings().all()
+
+    if not rows:
+        return {}
+
+    adjustments = {}
+    for r in rows:
+        pt    = r['pitch_type_code']
+        pk    = float(r['pk_plus']    or 100)
+        phr   = float(r['phr_plus']   or 100)
+        stuff = float(r['stuff_score'] or 100)
+
+        pk_adj  = 1.0 + (pk  - 100) / 180
+        phr_adj = 1.0 + (phr - 100) / 180
+
+        adjustments[pt] = {
+            'whiff_mult':   round(pk_adj, 3),
+            'csw_mult':     round(pk_adj, 3),
+            'contact_mult': round(2.0 - phr_adj, 3),
+            'hr_mult':      round(2.0 - phr_adj, 3),
+            'pk_plus':      round(pk, 1),
+            'phr_plus':     round(phr, 1),
+            'stuff_score':  round(stuff, 1),
+        }
+
+    return adjustments
+
+
 def load_goose3_adjustments(pitcher_id: int, bat_side: str,
                              db: Session) -> dict:
     """
-    Load Goose+3 per-pitch adjustments for simulation.
-    Single unified signal — replaces separate G1/G2/Stuff blending.
+    Load per-pitch adjustments using empirically validated model assignments:
+    - Stuff Score → whiff_mult/csw_mult (best K rate predictor, r=0.358)
+    - Goose+2     → contact_mult + hr_mult (best HR predictor, r=-0.298)
     """
     sql = text("""
         SELECT pitch_type_code, goose3_plus, stuff_score,
@@ -345,13 +480,16 @@ def load_goose3_adjustments(pitcher_id: int, bat_side: str,
 
     if not rows:
         sql2 = text("""
-            SELECT DISTINCT ON (pitch_type_code)
-                   pitch_type_code, goose3_plus, stuff_score,
-                   goose2_score, stuff_outcomes_gap, pitches / 2 as pitches
+            SELECT pitch_type_code,
+                   AVG(goose3_plus)       AS goose3_plus,
+                   AVG(stuff_score)       AS stuff_score,
+                   AVG(goose2_score)      AS goose2_score,
+                   AVG(stuff_outcomes_gap) AS stuff_outcomes_gap,
+                   SUM(pitches)           AS pitches
             FROM mlb.goose3_scores
             WHERE pitcher_id = :pid AND season = 2026
-            AND pitches >= 10
-            ORDER BY pitch_type_code, pitches DESC
+            GROUP BY pitch_type_code
+            HAVING SUM(pitches) >= 10
         """)
         rows = db.execute(sql2, {"pid": pitcher_id}).mappings().all()
 
@@ -361,19 +499,129 @@ def load_goose3_adjustments(pitcher_id: int, bat_side: str,
     adjustments = {}
     for r in rows:
         pt = r['pitch_type_code']
-        g3 = float(r['goose3_plus'] or 100)
-        adj = 1.0 + (g3 - 100) / 180
+        stuff  = float(r['stuff_score']  or 100)
+        goose2 = float(r['goose2_score'] or 100)
+        goose3 = float(r['goose3_plus']  or 100)
+
+        # Stuff Score drives whiff (best K predictor r=0.358)
+        stuff_adj = 1.0 + (stuff - 100) / 180
+        # Goose+2 drives contact quality and HR (best HR predictor r=-0.298)
+        g2_adj = 1.0 + (goose2 - 100) / 180
+
         adjustments[pt] = {
-            'whiff_mult': round(adj, 3),
-            'csw_mult': round(adj, 3),
-            'contact_mult': round(2.0 - adj, 3),
-            'goose3_plus': g3,
-            'stuff_score': float(r['stuff_score'] or 100),
-            'goose2_score': float(r['goose2_score'] or 100),
-            'gap': float(r['stuff_outcomes_gap'] or 0),
+            'whiff_mult':   round(stuff_adj, 3),
+            'csw_mult':     round(stuff_adj, 3),
+            'contact_mult': round(2.0 - g2_adj, 3),
+            'hr_mult':      round(2.0 - g2_adj, 3),
+            'goose3_plus':  round(goose3, 1),
+            'stuff_score':  round(stuff, 1),
+            'goose2_score': round(goose2, 1),
+            'gap':          round(float(r['stuff_outcomes_gap'] or 0), 1),
         }
 
     return adjustments
+
+
+# ── SPLITS HELPERS ────────────────────────────────────────────────────────────
+
+def _combine_mults(*mults: dict, lo: float = 0.60, hi: float = 1.50) -> dict:
+    """Multiply outcome multipliers from multiple adjustment dicts, clamp to [lo, hi]."""
+    keys = ('k_mult', 'bb_mult', 'hr_mult', 'contact_mult')
+    out = {k: 1.0 for k in keys}
+    for m in mults:
+        if not m:
+            continue
+        for k in keys:
+            if k in m:
+                out[k] *= m[k]
+    return {k: max(lo, min(hi, round(v, 3))) for k, v in out.items()}
+
+
+def load_tto_adjustment(pitcher_id: int, season: int, tto: int,
+                         db: Session) -> dict:
+    """
+    Load time-through-order adjustment from mlb.pitcher_splits.
+    Returns k/bb/hr multipliers as ratio of tto split vs pitcher's overall rate.
+    Regression weight = min(0.80, tto_pa / (tto_pa + TTO_REG)).
+    """
+    tto_key = f'tto_{tto}' if tto <= 2 else 'tto_3plus'
+    try:
+        rows = db.execute(text("""
+            SELECT split_type, pa, k_pct, bb_pct, hr_pct
+            FROM mlb.pitcher_splits
+            WHERE pitcher_id = :pid AND season = :season
+            AND split_type IN (:tto_key, 'overall')
+        """), {"pid": pitcher_id, "season": season, "tto_key": tto_key}).mappings().all()
+    except Exception:
+        return {}
+
+    by_split = {r['split_type']: dict(r) for r in rows}
+    tto_row    = by_split.get(tto_key)
+    overall_row = by_split.get('overall')
+    if not tto_row or not overall_row:
+        return {}
+
+    tto_pa = float(tto_row.get('pa') or 0)
+    w = min(0.80, tto_pa / (tto_pa + TTO_REG))
+
+    def _ratio(tto_val, overall_val):
+        blended = tto_val * w + overall_val * (1 - w)
+        return blended / max(overall_val, 0.01)
+
+    return {
+        'k_mult':  round(_ratio(float(tto_row.get('k_pct')  or LG_K_PCT),
+                                float(overall_row.get('k_pct')  or LG_K_PCT)), 3),
+        'bb_mult': round(_ratio(float(tto_row.get('bb_pct') or LG_BB_PCT),
+                                float(overall_row.get('bb_pct') or LG_BB_PCT)), 3),
+        'hr_mult': round(_ratio(float(tto_row.get('hr_pct') or LG_HR_PCT),
+                                float(overall_row.get('hr_pct') or LG_HR_PCT)), 3),
+        'tto':              tto,
+        'tto_pa':           int(tto_pa),
+        'regression_weight': round(w, 3),
+    }
+
+
+def load_h2h_adjustment(pitcher_id: int, batter_id: int, db: Session) -> dict:
+    """
+    Load head-to-head history adjustment from mlb.matchup_history.
+    Aggregates all seasons for career H2H; re-applies regression at career PA level.
+    Returns k_mult, hr_mult relative to league average.
+    """
+    try:
+        row = db.execute(text("""
+            SELECT
+                SUM(pa)  AS pa,
+                ROUND(SUM(k)::NUMERIC  / NULLIF(SUM(pa), 0) * 100, 2) AS k_pct_raw,
+                ROUND(SUM(hr)::NUMERIC / NULLIF(SUM(pa), 0) * 100, 2) AS hr_pct_raw,
+                ROUND(
+                    (SUM(k)::NUMERIC / NULLIF(SUM(pa), 0) * 100)
+                    * (SUM(pa)::NUMERIC / (SUM(pa) + 20))
+                    + 22.0 * (20.0 / (SUM(pa) + 20)), 2) AS k_pct_reg,
+                ROUND(
+                    (SUM(hr)::NUMERIC / NULLIF(SUM(pa), 0) * 100)
+                    * (SUM(pa)::NUMERIC / (SUM(pa) + 20))
+                    + 3.5 * (20.0 / (SUM(pa) + 20)), 2) AS hr_pct_reg
+            FROM mlb.matchup_history
+            WHERE pitcher_id = :pid AND batter_id = :bid
+        """), {"pid": pitcher_id, "bid": batter_id}).mappings().first()
+    except Exception:
+        return {}
+
+    if not row or not row['pa']:
+        return {}
+
+    k_reg  = float(row['k_pct_reg']  or LG_K_PCT)
+    hr_reg = float(row['hr_pct_reg'] or LG_HR_PCT)
+
+    return {
+        'k_mult':    round(k_reg  / LG_K_PCT,  3),
+        'hr_mult':   round(hr_reg / LG_HR_PCT, 3),
+        'pa':        int(row['pa']),
+        'k_pct_raw':  float(row['k_pct_raw']  or 0),
+        'hr_pct_raw': float(row['hr_pct_raw'] or 0),
+        'k_pct_reg':  round(k_reg, 2),
+        'hr_pct_reg': round(hr_reg, 2),
+    }
 
 
 # ── PITCH SELECTION ───────────────────────────────────────────────────────────
@@ -491,20 +739,179 @@ def resolve_contact(pitch_type: str, batter_tends: dict) -> str:
     return 'field_out'
 
 
+def load_weather_modifier(game_pk: int, db) -> float:
+    """Load combined HR modifier from weather data. Default 1.0."""
+    if not game_pk:
+        return 1.0
+    try:
+        result = db.execute(text("""
+            SELECT combined_hr_modifier
+            FROM mlb.game_weather
+            WHERE game_pk = :gp
+        """), {"gp": game_pk}).scalar()
+        return float(result) if result else 1.0
+    except Exception:
+        return 1.0
+
+
+K_REG = 30  # regression constant for splits blending
+
+
+def load_game_state_adjustments(pitcher_id: int, batter_id: int,
+                                 on_first: bool, on_second: bool, on_third: bool,
+                                 outs: int, db) -> dict:
+    """
+    Load splits-based adjustments for the current base-out state.
+    Returns k_mult, bb_mult, hr_mult blended toward league average via regression.
+    """
+    try:
+        season = db.execute(text("""
+            SELECT MAX(g.season) FROM mlb.games g WHERE g.game_type = 'R'
+        """)).scalar() or 2026
+
+        # Determine base/out context key
+        if on_second or on_third:
+            base_ctx = 'risp'
+        elif on_first or on_second or on_third:
+            base_ctx = 'runners_on'
+        else:
+            base_ctx = 'bases_empty'
+
+        if outs == 0:
+            out_ctx = 'no_outs'
+        elif outs == 1:
+            out_ctx = 'one_out'
+        else:
+            out_ctx = 'two_outs'
+
+        # League baseline k_pct and bb_pct for regression
+        lg_row = db.execute(text("""
+            SELECT
+                ROUND(AVG(CASE WHEN event IN ('Strikeout','Strikeout - DP') THEN 1.0 ELSE 0.0 END) * 100, 1) as k_pct,
+                ROUND(AVG(CASE WHEN event IN ('Walk','Intent Walk') THEN 1.0 ELSE 0.0 END) * 100, 1) as bb_pct,
+                ROUND(AVG(CASE WHEN event = 'Home Run' THEN 1.0 ELSE 0.0 END) * 100, 1) as hr_pct
+            FROM mlb.at_bats ab
+            JOIN mlb.games g ON g.game_pk = ab.game_pk
+            WHERE g.season = :season AND g.game_type = 'R'
+            AND ab.runners_reconstructed = TRUE
+            AND ab.event NOT IN ('Runner Out','Field Error','Caught Stealing 2B',
+                                  'Caught Stealing 3B','Caught Stealing Home',
+                                  'Pickoff','Wild Pitch','Passed Ball')
+        """), {"season": season}).mappings().first()
+
+        if not lg_row:
+            return {}
+
+        lg_k = float(lg_row['k_pct'] or 22.0)
+        lg_bb = float(lg_row['bb_pct'] or 8.5)
+        lg_hr = float(lg_row['hr_pct'] or 3.5)
+
+        def get_split(player_id: int, is_pitcher: bool) -> dict:
+            if is_pitcher:
+                pa_col = "pitcher_id"
+            else:
+                pa_col = "batter_id"
+            # Query split stats for this context
+            col_filter = "pitcher_id" if is_pitcher else "batter_id"
+            rows = db.execute(text(f"""
+                SELECT
+                    COUNT(*) as pa,
+                    ROUND(AVG(CASE WHEN event IN ('Strikeout','Strikeout - DP') THEN 1.0 ELSE 0.0 END) * 100, 1) as k_pct,
+                    ROUND(AVG(CASE WHEN event IN ('Walk','Intent Walk') THEN 1.0 ELSE 0.0 END) * 100, 1) as bb_pct,
+                    ROUND(AVG(CASE WHEN event = 'Home Run' THEN 1.0 ELSE 0.0 END) * 100, 1) as hr_pct
+                FROM mlb.at_bats ab
+                JOIN mlb.games g ON g.game_pk = ab.game_pk
+                WHERE ab.{col_filter} = :pid
+                AND g.season = :season AND g.game_type = 'R'
+                AND ab.runners_reconstructed = TRUE
+                AND (
+                    (:ctx = 'risp' AND (ab.on_second OR ab.on_third))
+                    OR (:ctx = 'runners_on' AND (ab.on_first OR ab.on_second OR ab.on_third))
+                    OR (:ctx = 'bases_empty' AND NOT ab.on_first AND NOT ab.on_second AND NOT ab.on_third)
+                )
+                AND (
+                    (:out_ctx = 'no_outs' AND ab.outs_before = 0)
+                    OR (:out_ctx = 'one_out' AND ab.outs_before = 1)
+                    OR (:out_ctx = 'two_outs' AND ab.outs_before = 2)
+                )
+                AND ab.event NOT IN ('Runner Out','Field Error','Caught Stealing 2B',
+                                      'Caught Stealing 3B','Caught Stealing Home',
+                                      'Pickoff','Wild Pitch','Passed Ball')
+            """), {"pid": player_id, "season": season, "ctx": base_ctx, "out_ctx": out_ctx}).mappings().first()
+            return dict(rows) if rows else {}
+
+        p_split = get_split(pitcher_id, is_pitcher=True)
+        b_split = get_split(batter_id, is_pitcher=False)
+
+        def blend(actual, pa, lg_val):
+            if not actual or not pa:
+                return lg_val
+            w = float(pa) / (float(pa) + K_REG)
+            return actual * w + lg_val * (1 - w)
+
+        p_pa = float(p_split.get('pa') or 0)
+        b_pa = float(b_split.get('pa') or 0)
+
+        p_k = blend(float(p_split.get('k_pct') or lg_k), p_pa, lg_k)
+        b_k = blend(float(b_split.get('k_pct') or lg_k), b_pa, lg_k)
+        p_bb = blend(float(p_split.get('bb_pct') or lg_bb), p_pa, lg_bb)
+        b_bb = blend(float(b_split.get('bb_pct') or lg_bb), b_pa, lg_bb)
+        p_hr = blend(float(p_split.get('hr_pct') or lg_hr), p_pa, lg_hr)
+        b_hr = blend(float(b_split.get('hr_pct') or lg_hr), b_pa, lg_hr)
+
+        import math as _math
+        k_ratio_p = p_k / max(lg_k, 0.01)
+        k_ratio_b = b_k / max(lg_k, 0.01)
+        k_mult = round(_math.sqrt(k_ratio_p * k_ratio_b), 3)
+        k_mult = max(0.70, min(1.30, k_mult))
+
+        bb_ratio_p = p_bb / max(lg_bb, 0.01)
+        bb_ratio_b = b_bb / max(lg_bb, 0.01)
+        bb_mult = round(_math.sqrt(bb_ratio_p * bb_ratio_b), 3)
+        bb_mult = max(0.70, min(1.30, bb_mult))
+
+        hr_ratio_p = p_hr / max(lg_hr, 0.01)
+        hr_ratio_b = b_hr / max(lg_hr, 0.01)
+        hr_mult = round(_math.sqrt(hr_ratio_p * hr_ratio_b), 3)
+        hr_mult = max(0.70, min(1.30, hr_mult))
+
+        runners = []
+        if on_first: runners.append('1B')
+        if on_second: runners.append('2B')
+        if on_third: runners.append('3B')
+        state_label = (', '.join(runners) if runners else 'Bases Empty') + f', {outs} out{"s" if outs != 1 else ""}'
+
+        return {
+            'k_mult': k_mult,
+            'bb_mult': bb_mult,
+            'hr_mult': hr_mult,
+            'base_context': base_ctx,
+            'out_context': out_ctx,
+            'state_label': state_label,
+            'pitcher_pa': int(p_pa),
+            'batter_pa': int(b_pa),
+        }
+    except Exception as e:
+        print(f"  Splits adjustment error: {e}")
+        return {}
+
+
 def resolve_contact_v2(pitch_type: str, batter_tends: dict,
                         contact_mult: float = 1.0,
-                        hr_mult: float = 1.0) -> str:
+                        hr_mult: float = 1.0,
+                        weather_hr_mult: float = 1.0) -> str:
     """
-    Resolve ball-in-play with Juiced+ 2 batter adjustments.
+    Resolve ball-in-play with Juiced+ 2 batter adjustments and weather modifier.
     contact_mult > 1.0 = better hitter, more likely to get hits.
     hr_mult > 1.0 = better hitter, more likely to hit HR.
+    weather_hr_mult: combined wind+temp HR modifier from game_weather table.
     """
     probs = get_contact_probs(pitch_type, batter_tends)
 
     adjusted = {}
     for outcome, prob in probs.items():
         if outcome == 'home_run':
-            adjusted[outcome] = prob * hr_mult
+            adjusted[outcome] = prob * hr_mult * weather_hr_mult
         elif outcome in ('single', 'double', 'triple'):
             adjusted[outcome] = prob * contact_mult
         else:
@@ -531,7 +938,9 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                 balls_start: int = 0,
                 strikes_start: int = 0,
                 goose2_adj: dict = None,
-                juiced2_adj: dict = None) -> dict:
+                juiced2_adj: dict = None,
+                weather_hr_mult: float = 1.0,
+                splits_adj: dict = None) -> dict:
     """
     Simulate a single plate appearance.
     balls_start/strikes_start: starting count (default 0-0)
@@ -549,6 +958,14 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
     batter_contact_mult = juiced2_adj.get('contact_mult', 1.0) if juiced2_adj else 1.0
     batter_hr_mult = juiced2_adj.get('hr_mult', 1.0) if juiced2_adj else 1.0
 
+    if splits_adj:
+        k_mult = splits_adj.get('k_mult', 1.0)
+        batter_hr_mult *= splits_adj.get('hr_mult', 1.0)
+        bb_mult = splits_adj.get('bb_mult', 1.0)
+    else:
+        k_mult = 1.0
+        bb_mult = 1.0
+
     for _ in range(20):
         pitch_count += 1
         mix = get_mix_for_count(balls, strikes, count_mix, lg_mix, fallback_mix)
@@ -561,13 +978,24 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
             adj = goose2_adj[pt]
             pitcher_whiff = min(0.95, pitcher_whiff * adj['whiff_mult'])
             csw = min(0.95, csw * adj['csw_mult'])
+            pitcher_contact_mult = adj.get('contact_mult', 1.0)
+            pitcher_hr_mult = adj.get('hr_mult', 1.0)
+        else:
+            pitcher_contact_mult = 1.0
+            pitcher_hr_mult = 1.0
 
+        # in_zone only used to resolve called strike vs ball on non-swings
         in_zone = random.random() < min(csw * 1.5, 0.75)
 
         tend = batter_tends.get(pt, {})
         batter_whiff = float(tend.get('whiff_rate') or LEAGUE_WHIFF)
         chase = float(tend.get('chase_rate') or LEAGUE_CHASE)
-        swing_prob = 0.70 if in_zone else chase
+
+        # Count-specific swing rate (empirical); batter chase tendency scales it
+        # relative to league average so batter individuality is preserved.
+        base_swing = COUNT_SWING_RATE.get((balls, strikes), 0.46)
+        chase_adj = chase / LEAGUE_CHASE
+        swing_prob = max(0.05, min(0.95, base_swing * chase_adj))
 
         swings = random.random() < swing_prob
 
@@ -581,8 +1009,8 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
             })
 
         if swings:
-            whiff_prob = pitcher_whiff * 0.60 + batter_whiff * 0.40
-            if random.random() < whiff_prob:
+            whiff_prob = (pitcher_whiff * 0.60 + batter_whiff * 0.40) * k_mult
+            if random.random() < min(whiff_prob, 0.95):
                 strikes += 1
                 if record_pitches:
                     pitch_log[-1]["outcome"] = "whiff"
@@ -599,8 +1027,9 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                         pitch_log[-1]["outcome"] = "foul"
                 else:
                     result = resolve_contact_v2(pt, batter_tends,
-                                                batter_contact_mult,
-                                                batter_hr_mult)
+                                                batter_contact_mult * pitcher_contact_mult,
+                                                batter_hr_mult * pitcher_hr_mult,
+                                                weather_hr_mult)
                     if record_pitches:
                         pitch_log[-1]["outcome"] = result
                     return {"result": result,
@@ -619,7 +1048,8 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                 balls += 1
                 if record_pitches:
                     pitch_log[-1]["outcome"] = "ball"
-                if balls >= 4:
+                walk_threshold = max(2, round(4 / bb_mult)) if bb_mult > 1.0 else 4
+                if balls >= walk_threshold:
                     return {"result": "walk",
                             "pitches": pitch_log,
                             "pitch_count": pitch_count}
@@ -672,17 +1102,19 @@ def run_simulation(pitcher_id: int, batter_id: int,
                    n_sims: int, db: Session,
                    record_sample: int = 10,
                    balls_start: int = 0,
-                   strikes_start: int = 0) -> dict:
+                   strikes_start: int = 0,
+                   game_pk: int = None,
+                   on_first: bool = False,
+                   on_second: bool = False,
+                   on_third: bool = False,
+                   outs: int = 0,
+                   tto: int = 1,
+                   season: int = 2026) -> dict:
     """
     Full simulation runner. Returns aggregated results + sample PAs.
 
-    Args:
-        pitcher_id: MLBAM pitcher ID
-        batter_id: MLBAM batter ID
-        n_sims: number of simulations
-        db: database session
-        record_sample: number of sample PAs to record in detail
-        balls_start/strikes_start: starting count (default 0-0)
+    Pitcher adjustment priority: Goose+3 (Stuff→whiff, G2→contact/HR) → pK+/pHR+ fallback.
+    Split layers combined multiplicatively: base-out state × TTO × head-to-head history.
     """
     bat_side = db.execute(text("""
         SELECT bat_side FROM mlb.at_bats
@@ -697,14 +1129,46 @@ def run_simulation(pitcher_id: int, batter_id: int,
     if not fallback_mix and not count_mix:
         return {"error": "No pitcher mix data found"}
 
+    # Primary: Goose+3 (Stuff Score → whiff, Goose+2 → contact/HR); fallback: pK+/pHR+
     pitcher_adj = load_goose3_adjustments(pitcher_id, bat_side, db)
-    juiced2_adj = load_juiced2_batter_adjustments(batter_id, db)
+    using_goose3 = bool(pitcher_adj)
+    if not pitcher_adj:
+        pitcher_adj = load_pk_phr_adjustments(pitcher_id, bat_side, db)
+
+    juiced2_adj  = load_juiced2_batter_adjustments(batter_id, db)
+    weather_mult = load_weather_modifier(game_pk, db)
+
+    # Three split layers; combine multiplicatively, clamp to [0.60, 1.50]
+    base_splits = load_game_state_adjustments(
+        pitcher_id, batter_id, on_first, on_second, on_third, outs, db
+    )
+    tto_adj = load_tto_adjustment(pitcher_id, season, tto, db)
+    h2h_adj = load_h2h_adjustment(pitcher_id, batter_id, db)
+
+    splits_adj = _combine_mults(base_splits, tto_adj, h2h_adj)
+    if base_splits:
+        splits_adj['state_label'] = base_splits.get('state_label', '')
+        splits_adj['base_context'] = base_splits.get('base_context', '')
 
     if pitcher_adj:
-        print(f"  Applying Goose+3 adjustments for {len(pitcher_adj)} pitch types")
+        adj_label = 'Goose+3' if using_goose3 else 'pK+/pHR+'
+        print(f"  Applying {adj_label} adjustments for {len(pitcher_adj)} pitch types")
     if juiced2_adj:
-        print(f"  Applying Juiced+ 2 batter adjustment: "
+        print(f"  Applying Juiced+2 batter adjustment: "
               f"{juiced2_adj.get('juiced2_plus', 100):.1f}")
+    if weather_mult != 1.0:
+        print(f"  Weather HR modifier: {weather_mult:.3f}")
+    if tto_adj:
+        print(f"  TTO {tto} adjustment: k_mult={tto_adj.get('k_mult', 1.0):.3f} "
+              f"(PA={tto_adj.get('tto_pa', 0)})")
+    if h2h_adj:
+        print(f"  H2H adjustment: k_mult={h2h_adj.get('k_mult', 1.0):.3f} "
+              f"(PA={h2h_adj.get('pa', 0)})")
+    if splits_adj:
+        print(f"  Combined splits: {splits_adj.get('state_label', '')} "
+              f"k={splits_adj.get('k_mult', 1.0):.3f} "
+              f"bb={splits_adj.get('bb_mult', 1.0):.3f} "
+              f"hr={splits_adj.get('hr_mult', 1.0):.3f}")
 
     results = []
     sample_pas = []
@@ -715,7 +1179,9 @@ def run_simulation(pitcher_id: int, batter_id: int,
                          batter_tends, record_pitches=record,
                          balls_start=balls_start, strikes_start=strikes_start,
                          goose2_adj=pitcher_adj if pitcher_adj else None,
-                         juiced2_adj=juiced2_adj if juiced2_adj else None)
+                         juiced2_adj=juiced2_adj if juiced2_adj else None,
+                         weather_hr_mult=weather_mult,
+                         splits_adj=splits_adj if splits_adj else None)
         results.append(pa)
         if record:
             sample_pas.append(pa)
@@ -747,17 +1213,32 @@ def run_simulation(pitcher_id: int, batter_id: int,
 
     model_context = {}
     for pt, adj in pitcher_adj.items():
-        model_context[pt] = {
-            'goose3_plus': adj.get('goose3_plus'),
-            'stuff_score': adj.get('stuff_score'),
-            'goose2_score': adj.get('goose2_score'),
-            'gap': adj.get('gap'),
-            'whiff_mult': adj.get('whiff_mult'),
-        }
+        if using_goose3:
+            model_context[pt] = {
+                'goose3_plus':  adj.get('goose3_plus'),
+                'stuff_score':  adj.get('stuff_score'),
+                'goose2_score': adj.get('goose2_score'),
+                'gap':          adj.get('gap'),
+                'whiff_mult':   adj.get('whiff_mult'),
+                'contact_mult': adj.get('contact_mult'),
+                'hr_mult':      adj.get('hr_mult'),
+            }
+        else:
+            model_context[pt] = {
+                'pk_plus':      adj.get('pk_plus'),
+                'phr_plus':     adj.get('phr_plus'),
+                'stuff_score':  adj.get('stuff_score'),
+                'whiff_mult':   adj.get('whiff_mult'),
+                'contact_mult': adj.get('contact_mult'),
+                'hr_mult':      adj.get('hr_mult'),
+            }
     summary['model_context'] = model_context
     summary['juiced2_context'] = juiced2_adj or {}
 
     return {
+        "splits_context": splits_adj or {},
+        "tto_context": tto_adj or {},
+        "h2h_context": h2h_adj or {},
         "bat_side": bat_side,
         "results": summary,
         "outcome_distribution": {
@@ -778,5 +1259,6 @@ def run_simulation(pitcher_id: int, batter_id: int,
             "count_mix_counts": len(count_mix),
             "has_batter_tends": bool(batter_tends),
             "fallback_pitches": len(fallback_mix),
+            "pitcher_adj_model": 'goose3' if using_goose3 else 'pk_phr',
         }
     }

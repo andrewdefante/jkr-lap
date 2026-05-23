@@ -11,8 +11,9 @@ import os
 
 app = FastAPI()
 
-from fastapi.staticfiles import StaticFiles
-app.mount("/frontend", StaticFiles(directory="/frontend"), name="frontend")
+os.makedirs("/app/static", exist_ok=True)
+app.mount("/static",   StaticFiles(directory="/app/static"), name="static")
+app.mount("/frontend", StaticFiles(directory="/frontend"),   name="frontend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +35,17 @@ app.include_router(health.router)
 app.include_router(mlb.router, prefix="/mlb", tags=["MLB"])
 app.include_router(nascar.router, prefix="/nascar", tags=["NASCAR"])
 app.include_router(f1.router)
+
+@app.get("/", include_in_schema=False)
+def homepage():
+    path = "/app/static/homepage.html"
+    if os.path.exists(path):
+        return FileResponse(path)
+    return FileResponse("/frontend/mlb.html")
+
+@app.get("/morning-brief", include_in_schema=False)
+def morning_brief():
+    return homepage()
 
 @app.get("/dashboard", include_in_schema=False)
 def dashboard():

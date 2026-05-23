@@ -37,6 +37,7 @@ from mlb.simulate import (
 N_SIMS_PER_BATTER = 500
 TOP_N_BATTERS = 8
 MIN_PA = 20
+PA_PER_INN = 3.5
 
 TEAM_ABBREVS = {
     108: 'LAA', 109: 'AZ', 110: 'BAL', 111: 'BOS', 112: 'CHC',
@@ -158,6 +159,64 @@ def get_top_batters(batter_ids: list, pitcher_hand: str, db) -> list:
     return [dict(r) for r in rows]
 
 
+def get_pitcher_avg_ip(pitcher_id: int, db) -> float:
+    """Pitcher's avg IP per start in 2026. Defaults to 6.0 if insufficient data."""
+    result = db.execute(text("""
+        SELECT AVG(bp.innings_pitched)
+        FROM mlb.boxscore_pitching bp
+        JOIN mlb.games g ON g.game_pk = bp.game_pk
+        WHERE bp.player_id = :pid
+        AND g.season = 2026 AND g.game_type = 'R'
+        AND bp.games_started = 1
+    """), {"pid": pitcher_id}).scalar()
+    if result and float(result) >= 1.0:
+        return min(float(result), 9.0)
+    return 6.0
+
+
+def get_lineup_k_factor(batter_ids: list, db) -> float:
+    """Lineup K% vs league avg (25.1%), dampened 50%, clamped [0.80, 1.25]."""
+    if not batter_ids:
+        return 1.0
+    result = db.execute(text("""
+        SELECT SUM(bb.strikeouts)::float / NULLIF(SUM(bb.at_bats), 0)
+        FROM mlb.boxscore_batting bb
+        JOIN mlb.games g ON g.game_pk = bb.game_pk
+        WHERE bb.player_id = ANY(:bids)
+        AND g.season = 2026 AND g.game_type = 'R'
+        HAVING SUM(bb.at_bats) >= 50
+    """), {"bids": batter_ids}).scalar()
+    if not result:
+        return 1.0
+    LEAGUE_K_PCT = 0.251
+    raw_ratio = float(result) / LEAGUE_K_PCT
+    clamped = max(0.80, min(1.25, raw_ratio))
+    dampened = 1.0 + (clamped - 1.0) * 0.5
+    return round(dampened, 3)
+
+
+def get_acwr_ip_factor(pitcher_id: int, db) -> float:
+    """IP multiplier from ACWR fatigue signal. Returns 1.0 gracefully when table is empty."""
+    try:
+        acwr = db.execute(text("""
+            SELECT acwr FROM mlb.player_workload
+            WHERE player_id = :pid AND player_type = 'pitcher'
+            ORDER BY calc_date DESC LIMIT 1
+        """), {"pid": pitcher_id}).scalar()
+        if acwr is None:
+            return 1.0
+        acwr = float(acwr)
+        if acwr > 1.5:
+            return 0.70
+        elif acwr > 1.3:
+            return 0.85
+        elif acwr < 0.8:
+            return 1.05
+        return 1.0
+    except Exception:
+        return 1.0
+
+
 def simulate_pitcher_vs_batters(pitcher_id: int, batters: list, db) -> dict:
     """Run N_SIMS_PER_BATTER simulations for each batter using combined Goose+1/2 + Stuff Score."""
     lg_mix = load_league_count_mix(db)
@@ -250,6 +309,13 @@ def build_daily_projections(target_date: str, db):
             proj = simulate_pitcher_vs_batters(pitcher_id, batters, db)
             if not proj:
                 continue
+
+            avg_ip = get_pitcher_avg_ip(pitcher_id, db)
+            lineup_k = get_lineup_k_factor(batter_ids, db)
+            acwr_factor = get_acwr_ip_factor(pitcher_id, db)
+            proj_ip = round(avg_ip * acwr_factor, 2)
+            proj["proj_ks_6inn"] = round(proj["proj_k_pct"] / 100 * proj_ip * PA_PER_INN * lineup_k, 1)
+            print(f"    IP={proj_ip} (avg={avg_ip:.1f} acwr={acwr_factor:.2f}) lineup_k={lineup_k:.3f} → proj_ks={proj['proj_ks_6inn']}")
 
             goose = db.execute(text("""
                 SELECT goose_plus FROM mlb.goose_overall
@@ -471,7 +537,7 @@ def build_daily_batter_projections(target_date: str, db):
                         juiced_plus_vs_bucket, juiced_plus_overall,
                         proj_avg, proj_obp, proj_slg, proj_ops,
                         proj_hr_pct, proj_k_pct, proj_bb_pct, proj_hit_pct,
-                        simulations
+                        proj_tb, simulations
                     ) VALUES (
                         :snap_date, :game_pk, :batter_id, :batter_name,
                         :bat_side, :team_abbrev, :pitcher_id, :pitcher_name,
@@ -480,7 +546,7 @@ def build_daily_batter_projections(target_date: str, db):
                         :juiced_bucket, :juiced_overall,
                         :proj_avg, :proj_obp, :proj_slg, :proj_ops,
                         :proj_hr_pct, :proj_k_pct, :proj_bb_pct, :proj_hit_pct,
-                        :sims
+                        :proj_tb, :sims
                     )
                     ON CONFLICT (snapshot_date, batter_id, opp_pitcher_id)
                     DO UPDATE SET
@@ -492,6 +558,7 @@ def build_daily_batter_projections(target_date: str, db):
                         proj_k_pct = EXCLUDED.proj_k_pct,
                         proj_bb_pct = EXCLUDED.proj_bb_pct,
                         proj_hit_pct = EXCLUDED.proj_hit_pct,
+                        proj_tb = EXCLUDED.proj_tb,
                         juiced_plus_vs_bucket = EXCLUDED.juiced_plus_vs_bucket,
                         juiced_plus_overall = EXCLUDED.juiced_plus_overall,
                         team_abbrev = EXCLUDED.team_abbrev,
@@ -521,6 +588,7 @@ def build_daily_batter_projections(target_date: str, db):
                     "proj_k_pct": sim['k_pct'],
                     "proj_bb_pct": sim['bb_pct'],
                     "proj_hit_pct": sim['hit_pct'],
+                    "proj_tb": round(float(sim['slg']) * 3.5, 2) if sim.get('slg') else None,
                     "sims": N_SIMS_PER_BATTER,
                 })
                 stored += 1

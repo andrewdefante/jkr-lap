@@ -4,15 +4,24 @@ Daily Sports Data Pipeline
 Runs on a schedule to keep all sports data current.
 
 Schedule:
-  6:00 AM ET daily     — MLB fetch + transform + health check
-  6:30 AM ET daily     — Fangraphs stats update
+  6:00 AM ET daily     — MLB morning pipeline (fetch → BAPV+ → Goose+ → runners →
+                         Stuff Score → pK+/pHR+ → Juiced+2 → Goose+3 → weather → projections)
+  10:00 AM ET daily    — Weather fetch
+  10:30 AM ET daily    — Daily projections (lineups posted)
+  11:00 AM ET daily    — pK+ / pHR+ rebuild
+  11:15 AM ET daily    — Juiced+ 2 rebuild
+  11:30 AM ET daily    — Goose+ 3 rebuild
+  7:00 AM ET Mondays   — Batter tendencies (weekly)
   11:00 PM ET Sundays  — NASCAR fetch + transform
-  11:00 PM ET Sundays  — F1 fetch + transform (race weekends)
+  11:15 PM ET Sundays  — F1 fetch + transform (race weekends)
 
 Usage:
-    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py           # run scheduler
-    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now mlb # run MLB pipeline now
-    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now all # run everything now
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py                      # run scheduler
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now mlb            # run MLB fetch now
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now pk-phr         # run pK+/pHR+ now
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now goose3         # run Goose+3 now
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now weather        # run weather now
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now all            # run everything now
 """
 
 import sys
@@ -180,14 +189,81 @@ def run_build_goose2():
                 ["--score-season", "2026", "--baseline-season", "2025"])
 
 
+def run_build_juiced2():
+    _run_script("Juiced+ 2", "/pipeline/mlb/build_goose2.py",
+                ["--score-season", "2026", "--baseline-season", "2025"])
+
+
+def run_build_stuff_score():
+    _run_script("Stuff Score", "/pipeline/mlb/build_stuff_score.py",
+                ["--season", "2026"])
+
+
+def run_build_pk_phr():
+    _run_script("pK+ / pHR+", "/pipeline/mlb/build_pk_phr.py",
+                ["--score-season", "2026", "--baseline-season", "2025"])
+
+
 def run_build_goose3():
     _run_script("Goose+ 3", "/pipeline/mlb/build_goose3.py",
                 ["--score-season", "2026"])
 
 
+def run_build_context_splits():
+    _run_script("Context Splits", "/pipeline/mlb/build_context_splits.py",
+                ["--seasons", "2024", "2025", "2026"])
+
+
+def run_build_workload():
+    _run_script("Player Workload", "/pipeline/mlb/build_context_splits.py",
+                ["--workload-only"])
+
+
+def run_fetch_weather():
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    _run_script("Weather Fetch", "/pipeline/mlb/fetch_weather.py",
+                ["--date", today])
+
+
+def run_reconstruct_runners():
+    _run_script("Reconstruct Runners", "/pipeline/mlb/reconstruct_runners.py",
+                ["--season", "2026"])
+
+
 def run_build_batter_tendencies():
     _run_script("Batter Tendencies", "/pipeline/mlb/build_batter_tendencies.py",
                 ["--season", "2025"])
+
+
+def run_fetch_kalshi():
+    _run_script("Kalshi Markets", "/pipeline/mlb/fetch_kalshi.py")
+
+
+def run_update_statuses():
+    _run_script("Status Update", "/pipeline/mlb/fetch.py",
+                ["--season", "2026", "--game-type", "R", "--update-status"])
+
+
+def run_build_actuals():
+    yesterday = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
+    _run_script("Daily Actuals", "/pipeline/mlb/build_actuals.py",
+                ["--date", yesterday])
+
+
+def run_build_model_scores():
+    yesterday = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
+    _run_script("Model Scores", "/pipeline/mlb/build_model_scores.py",
+                ["--date", yesterday])
+
+
+def run_build_game_projections():
+    yesterday = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
+    _run_script("Game Projections", "/pipeline/mlb/build_game_projections.py",
+                ["--date", yesterday])
+
+
+def run_generate_homepage():
+    _run_script("Morning Brief", "/pipeline/mlb/generate_homepage.py")
 
 
 def run_daily_projections():
@@ -196,21 +272,35 @@ def run_daily_projections():
                 ["--date", today])
 
 
+def run_fetch_lineups():
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    _run_script("Lineup Fetch", "/pipeline/mlb/fetch_lineups.py",
+                ["--date", today])
+
+
 def run_mlb_morning():
     """
     Full MLB morning pipeline — runs sequentially after overnight games are final.
-    Fetch → transform → BAPV+ → pitcher mix → Goose+ → daily projections.
+    Fetch → transform → BAPV+ → pitcher mix → Goose+ → runners → Stuff Score →
+    pK+/pHR+ → Juiced+2 → Goose+3 → weather → daily projections.
     """
     log.info("=" * 60)
     log.info("MLB MORNING PIPELINE START")
     log.info("=" * 60)
+    run_update_statuses()
     run_mlb_daily()
     run_fangraphs_daily()
     run_compute_bapv()
     run_build_pitcher_mix()
     run_build_goose()
-    run_build_goose2()
+    run_reconstruct_runners()
+    run_build_stuff_score()
+    run_build_pk_phr()
+    run_build_juiced2()
     run_build_goose3()
+    run_build_context_splits()
+    run_fetch_weather()
+    run_daily_projections()
     log.info("=" * 60)
     log.info("MLB MORNING PIPELINE COMPLETE")
     log.info("=" * 60)
@@ -310,13 +400,19 @@ def main():
     parser.add_argument(
         "--now", type=str, default=None,
         choices=["mlb", "mlb-morning", "fangraphs", "bapv", "pitcher-mix",
-                 "goose", "goose2", "goose3", "batter-tendencies", "daily-projections", "nascar", "f1", "all"],
+                 "goose", "stuff-score", "pk-phr", "juiced2", "goose3",
+                 "splits", "workload", "scores", "game-scores",
+                 "weather", "runners", "kalshi", "actuals", "homepage",
+                 "batter-tendencies", "daily-projections", "lineups",
+                 "update-status", "nascar", "f1", "all"],
         help="Run a specific pipeline immediately instead of scheduling",
     )
     args = parser.parse_args()
 
     if args.now:
         log.info(f"Running '{args.now}' now...")
+        if args.now in ("update-status", "all"):
+            run_update_statuses()
         if args.now in ("mlb", "all"):
             run_mlb_daily()
         if args.now in ("mlb-morning", "all"):
@@ -329,14 +425,38 @@ def main():
             run_build_pitcher_mix()
         if args.now in ("goose", "all"):
             run_build_goose()
-        if args.now in ("goose2", "all"):
-            run_build_goose2()
+        if args.now in ("stuff-score", "all"):
+            run_build_stuff_score()
+        if args.now in ("pk-phr", "all"):
+            run_build_pk_phr()
+        if args.now in ("juiced2", "all"):
+            run_build_juiced2()
         if args.now in ("goose3", "all"):
             run_build_goose3()
+        if args.now in ("splits", "all"):
+            run_build_context_splits()
+        if args.now in ("workload",):
+            run_build_workload()
+        if args.now in ("weather", "all"):
+            run_fetch_weather()
+        if args.now in ("runners", "all"):
+            run_reconstruct_runners()
+        if args.now in ("kalshi", "all"):
+            run_fetch_kalshi()
+        if args.now in ("actuals", "all"):
+            run_build_actuals()
+        if args.now in ("scores", "all"):
+            run_build_model_scores()
+        if args.now in ("game-scores", "all"):
+            run_build_game_projections()
+        if args.now in ("homepage", "all"):
+            run_generate_homepage()
         if args.now in ("batter-tendencies", "all"):
             run_build_batter_tendencies()
         if args.now in ("daily-projections", "all"):
             run_daily_projections()
+        if args.now in ("lineups", "all"):
+            run_fetch_lineups()
         if args.now in ("nascar", "all"):
             run_nascar_sunday()
         if args.now in ("f1", "all"):
@@ -355,12 +475,48 @@ def main():
         misfire_grace_time=3600,
     )
 
-    # Goose+ 2 / Juiced+ 2 — 11:00 AM ET (after morning fetch completes)
+    # Weather fetch — 10:00 AM ET (before projections, after lineups confirmed)
     scheduler.add_job(
-        run_build_goose2,
+        run_fetch_weather,
+        CronTrigger(hour=10, minute=0, timezone=ET),
+        id="weather_daily",
+        name="Weather fetch for today's games",
+        misfire_grace_time=1800,
+    )
+
+    # Stuff Score — 10:45 AM ET
+    scheduler.add_job(
+        run_build_stuff_score,
+        CronTrigger(hour=10, minute=45, timezone=ET),
+        id="stuff_score_daily",
+        name="Stuff Score Daily Rebuild",
+        misfire_grace_time=3600,
+    )
+
+    # pK+ / pHR+ — 11:00 AM ET (rolling 2026 baselines)
+    scheduler.add_job(
+        run_build_pk_phr,
         CronTrigger(hour=11, minute=0, timezone=ET),
-        id="goose2_daily",
-        name="Goose+ 2 Daily Rebuild",
+        id="pk_phr_daily",
+        name="pK+ / pHR+ Daily Rebuild",
+        misfire_grace_time=3600,
+    )
+
+    # Juiced+ 2 — 11:15 AM ET
+    scheduler.add_job(
+        run_build_juiced2,
+        CronTrigger(hour=11, minute=15, timezone=ET),
+        id="juiced2_daily",
+        name="Juiced+ 2 Daily Rebuild",
+        misfire_grace_time=3600,
+    )
+
+    # Goose+ 3 — 11:30 AM ET (after pK+/pHR+ and Juiced+2 complete)
+    scheduler.add_job(
+        run_build_goose3,
+        CronTrigger(hour=11, minute=30, timezone=ET),
+        id="goose3_daily",
+        name="Goose+ 3 Daily Rebuild",
         misfire_grace_time=3600,
     )
 
@@ -370,6 +526,78 @@ def main():
         CronTrigger(hour=10, minute=30, timezone=ET),
         id="daily_projections",
         name="Daily pitcher + hitter projections",
+        misfire_grace_time=3600,
+    )
+
+    # Lineup polling — every 30 min, 10am–8pm ET
+    scheduler.add_job(
+        run_fetch_lineups,
+        CronTrigger(hour="10-20", minute="0,30", timezone=ET),
+        id="lineup_poll",
+        name="Poll MLB lineups every 30 min",
+        misfire_grace_time=600,
+    )
+
+    # Kalshi markets — 9:00 AM ET (before homepage generation)
+    scheduler.add_job(
+        run_fetch_kalshi,
+        CronTrigger(hour=9, minute=0, timezone=ET),
+        id="kalshi_daily",
+        name="Kalshi MLB strikeout market fetch",
+        misfire_grace_time=1800,
+    )
+
+    # Morning brief — 9:30 AM ET (after Kalshi fetch)
+    scheduler.add_job(
+        run_generate_homepage,
+        CronTrigger(hour=9, minute=30, timezone=ET),
+        id="homepage_morning",
+        name="Generate morning brief",
+        misfire_grace_time=1800,
+    )
+
+    # Noon brief — 12:00 PM ET (after projections and lineups are posted)
+    scheduler.add_job(
+        run_generate_homepage,
+        CronTrigger(hour=12, minute=0, timezone=ET),
+        id="homepage_noon",
+        name="Regenerate brief with Kalshi edges (post-lineups)",
+        misfire_grace_time=1800,
+    )
+
+    # Player workload (ACWR) — 7:00 PM ET (after most in-game PA/pitch data is in)
+    scheduler.add_job(
+        run_build_workload,
+        CronTrigger(hour=19, minute=0, timezone=ET),
+        id="workload_daily",
+        name="Player workload / ACWR rebuild",
+        misfire_grace_time=3600,
+    )
+
+    # Actuals — 12:15 AM ET (catches all west coast games finishing ~12am ET)
+    scheduler.add_job(
+        run_build_actuals,
+        CronTrigger(hour=0, minute=15, timezone=ET),
+        id="actuals_nightly",
+        name="Build daily actuals after all games finish",
+        misfire_grace_time=3600,
+    )
+
+    # Model scores — 12:30 AM ET (after actuals are written)
+    scheduler.add_job(
+        run_build_model_scores,
+        CronTrigger(hour=0, minute=30, timezone=ET),
+        id="model_scores_nightly",
+        name="Score projections vs actuals",
+        misfire_grace_time=3600,
+    )
+
+    # Game projections + scoring — 12:35 AM ET (after actuals and model scores)
+    scheduler.add_job(
+        run_build_game_projections,
+        CronTrigger(hour=0, minute=35, timezone=ET),
+        id="game_projections_nightly",
+        name="Score game run and W/L projections",
         misfire_grace_time=3600,
     )
 
@@ -401,10 +629,18 @@ def main():
     )
 
     log.info("Joker Lap Scheduler starting...")
-    log.info("  MLB morning:        6:00 AM ET daily (fetch → transform → BAPV+ → Goose+ → Goose+ 2)")
-    log.info("  Goose+ 2 rebuild:  11:00 AM ET daily (rolling 2026 baselines)")
-    log.info("  Daily projections: 10:30 AM ET daily (lineups posted)")
-    log.info("  Batter tendencies:  7:00 AM ET Mondays (weekly rebuild)")
+    log.info("  MLB morning:         6:00 AM ET daily (fetch→transform→Goose+→Stuff→pK/pHR→Juiced2→Goose3→Splits)")
+    log.info("  Player workload:     7:00 PM ET daily (ACWR rebuild)")
+    log.info("  Weather:            10:00 AM ET daily")
+    log.info("  Stuff Score:        10:45 AM ET daily")
+    log.info("  Daily projections:  10:30 AM ET daily")
+    log.info("  pK+/pHR+ rebuild:  11:00 AM ET daily")
+    log.info("  Juiced+2 rebuild:  11:15 AM ET daily")
+    log.info("  Goose+3 rebuild:   11:30 AM ET daily")
+    log.info("  Kalshi fetch:       9:00 AM ET daily")
+    log.info("  Morning brief:      9:30 AM ET daily")
+    log.info("  Actuals build:     11:00 PM ET nightly")
+    log.info("  Batter tendencies:  7:00 AM ET Mondays")
     log.info("  NASCAR Sunday:     11:00 PM ET Sundays")
     log.info("  F1 Sunday:         11:15 PM ET Sundays")
 

@@ -38,10 +38,10 @@ GOOSE2_WEIGHTS = {
 }
 
 JUICED2_WEIGHTS = {
-    'ops':         0.30,
-    'quality_adj': 0.30,
-    'slg':         0.20,
-    'hard_hit':    0.20,
+    'quality_adj': 0.40,  # r=0.480 OPS — dominant signal
+    'slg':         0.28,  # r=0.327 SLG — strong
+    'ops':         0.22,  # r=0.288 OPS — moderate
+    'hard_hit':    0.10,  # r=0.161 HR  — weakest
 }
 
 MIN_PITCHES_BASELINE = 200

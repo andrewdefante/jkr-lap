@@ -20,6 +20,7 @@ def build_pitcher_actuals(game_date: date, db):
             actual_k, actual_ip, actual_er, actual_bb,
             actual_hits_allowed, actual_pitches,
             proj_k_pct, proj_hr_pct, proj_ops,
+            proj_ks_6inn, proj_ks_locked,
             kalshi_k_line, kalshi_k_yes_price
         )
         SELECT
@@ -43,6 +44,8 @@ def build_pitcher_actuals(game_date: date, db):
             dp.proj_k_pct,
             dp.proj_hr_pct,
             dp.proj_ops,
+            dp.proj_ks_6inn,
+            COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj_ks_locked,
             km.floor_strike,
             km.yes_ask
         FROM mlb.boxscore_pitching bp
@@ -77,6 +80,8 @@ def build_pitcher_actuals(game_date: date, db):
             actual_k = EXCLUDED.actual_k,
             actual_ip = EXCLUDED.actual_ip,
             actual_er = EXCLUDED.actual_er,
+            proj_ks_6inn = EXCLUDED.proj_ks_6inn,
+            proj_ks_locked = EXCLUDED.proj_ks_locked,
             kalshi_k_line = EXCLUDED.kalshi_k_line,
             kalshi_k_yes_price = EXCLUDED.kalshi_k_yes_price,
             computed_at = NOW()

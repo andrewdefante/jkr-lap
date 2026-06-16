@@ -76,6 +76,74 @@ def get_schedule(season: int, game_type: str = "R") -> list[dict]:
     return final_games
 
 
+def get_full_schedule(season: int, game_type: str = "R") -> list[dict]:
+    """Fetch full schedule with all statuses and current scores (one API call)."""
+    url = f"{MLB_BASE}/schedule"
+    params = {
+        "sportId": 1,
+        "season": season,
+        "gameType": game_type,
+        "fields": "dates,date,games,gamePk,gameType,status,detailedState,teams,away,home,team,abbreviation,name,score"
+    }
+
+    with httpx.Client(timeout=30.0) as client:
+        response = client.get(url, params=params)
+        response.raise_for_status()
+
+    data = response.json()
+    games = []
+    for date in data.get("dates", []):
+        for game in date.get("games", []):
+            teams = game.get("teams", {})
+            games.append({
+                "game_pk": game["gamePk"],
+                "game_date": date["date"],
+                "status": game.get("status", {}).get("detailedState"),
+                "away": teams.get("away", {}).get("team", {}).get("abbreviation"),
+                "home": teams.get("home", {}).get("team", {}).get("abbreviation"),
+                "away_score": teams.get("away", {}).get("score"),
+                "home_score": teams.get("home", {}).get("score"),
+            })
+    return games
+
+
+def update_statuses(season: int, game_type: str = "R", db=None) -> dict:
+    """
+    Update status and scores in mlb.games from the schedule API without re-fetching GUMBO.
+    Fast: one API call covers all games for the season.
+    """
+    from sqlalchemy import text
+
+    print(f"  Fetching {GAME_TYPES.get(game_type, game_type)} schedule for {season}...")
+    games = get_full_schedule(season, game_type)
+    print(f"  Found {len(games)} games — checking for status changes...")
+
+    update_sql = text("""
+        UPDATE mlb.games
+        SET status     = :status,
+            home_score = :home_score,
+            away_score = :away_score
+        WHERE game_pk = :game_pk
+          AND (status IS DISTINCT FROM :status
+               OR home_score IS DISTINCT FROM :home_score
+               OR away_score IS DISTINCT FROM :away_score)
+    """)
+
+    updated = 0
+    for game in games:
+        result = db.execute(update_sql, {
+            "game_pk":    game["game_pk"],
+            "status":     game["status"],
+            "home_score": game["home_score"],
+            "away_score": game["away_score"],
+        })
+        updated += result.rowcount
+
+    db.commit()
+    print(f"  Updated {updated} games (status/score changed)")
+    return {"total": len(games), "updated": updated}
+
+
 def fetch_game(game_pk: int, db) -> str:
     """
     Fetch a single game from GUMBO and upsert into mlb.raw_events.
@@ -182,7 +250,20 @@ def main():
                         help="Seconds between API calls (default: 0.5)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Count games without fetching")
+    parser.add_argument("--update-status", action="store_true",
+                        help="Update status/scores for existing games without re-fetching GUMBO")
     args = parser.parse_args()
+
+    if args.update_status:
+        db = SessionLocal()
+        try:
+            for season in args.season:
+                print(f"\n=== {season} MLB {GAME_TYPES.get(args.game_type)} — Status Update ===")
+                update_statuses(season, args.game_type, db)
+            print("\n=== Status update complete ===")
+        finally:
+            db.close()
+        return
 
     if args.dry_run:
         for season in args.season:

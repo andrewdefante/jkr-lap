@@ -2,7 +2,7 @@
 Compute model accuracy scores — projections vs actuals.
 
 Metrics stored per date:
-  pitcher / k_count  — actual_k vs proj_k_pct/100*21 (6-inn baseline)
+  pitcher / k_count  — actual_k vs proj_ks_locked (pre-game K projection; falls back to proj_ks_6inn, then proj_k_pct/100*21)
   pitcher / k_rate   — actual K% vs proj_k_pct (rate calibration)
   pitcher / er_proxy — actual_er vs ops-derived ER estimate
   pitcher / ip_dist  — actual IP distribution (no projection, baseline tracking)
@@ -53,8 +53,13 @@ def build_pitcher_scores(score_date: date, db) -> list:
                 actual_ip,
                 actual_er,
                 proj_k_pct,
-                -- 6-inn K count projection (our published standard)
-                ROUND((proj_k_pct / 100.0 * 21)::numeric, 2)              AS proj_k_count,
+                -- Use locked pre-game K projection when available, else stored 6inn value,
+                -- else fall back to deriving from K% (legacy rows before 2026-06-02)
+                ROUND(COALESCE(
+                    proj_ks_locked,
+                    proj_ks_6inn,
+                    proj_k_pct / 100.0 * 21
+                )::numeric, 2)                                             AS proj_k_count,
                 -- per-outing ER proxy via OPS → ERA conversion (ERA ≈ OPS * 4.5)
                 ROUND((proj_ops * 4.5 * actual_ip / 9.0)::numeric, 2)     AS proj_er,
                 -- actual K rate: K per estimated BF (3.3 BF/IP)
@@ -206,9 +211,12 @@ def build_batter_scores(score_date: date, db) -> list:
                              AND actual_k_rate IS NOT NULL)::numeric, 3) AS k_bias,
             -- HR BRIER (probability score for binary event)
             COUNT(CASE WHEN proj_hr_pct IS NOT NULL THEN 1 END)        AS n_hr,
-            ROUND(AVG(POWER(hr_binary - proj_hr_pct / 100.0, 2))
+            -- Convert per-PA HR rate to per-game probability (avg 3.8 PA/game)
+            -- P(HR in game) = 1 - (1 - hr_per_pa)^3.8
+            ROUND(AVG(POWER(
+                    hr_binary::numeric - (1.0 - POWER((1.0 - proj_hr_pct/100.0), 3.8)), 2.0))
                   FILTER (WHERE proj_hr_pct IS NOT NULL)::numeric, 4)  AS hr_brier,
-            ROUND(AVG(proj_hr_pct)
+            ROUND(AVG((1.0 - POWER((1.0 - proj_hr_pct/100.0), 3.8)) * 100.0)
                   FILTER (WHERE proj_hr_pct IS NOT NULL)::numeric, 2)  AS hr_proj_rate,
             ROUND(AVG(hr_binary)
                   FILTER (WHERE proj_hr_pct IS NOT NULL)::numeric, 4)  AS hr_actual_rate

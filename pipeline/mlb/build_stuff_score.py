@@ -68,11 +68,17 @@ EMPIRICAL_WEIGHTS = {
 }
 
 OUTCOME_WEIGHTS    = {'whiff': 0.40, 'slg': 0.35, 'csw': 0.25}
-COMPONENT_WEIGHTS  = {'physical': 0.40, 'location': 0.35, 'tunnel': 0.25}
+COMPONENT_WEIGHTS  = {
+    'weighted_whiff': 0.45,
+    'physical':       0.35,
+    'location':       0.15,
+    'tunnel':         0.05,
+}
 ZONE_OUTCOME_WEIGHTS = {'whiff': 0.40, 'slg': 0.35, 'csw': 0.25}
 
 REGRESSION_K = 200
 PITCH_TYPES  = ('FF', 'SI', 'SL', 'CH', 'CU', 'FC', 'ST')
+SCALE        = 18.0
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -295,28 +301,52 @@ def compute_league_physical_avgs(baseline_season: int, db) -> dict:
     League average and std dev of physical characteristics per pitch type.
     Aggregates to pitcher level first so std dev reflects pitcher-to-pitcher
     variation, not pitch-to-pitch noise within a single pitcher's arsenal.
+    Also computes avg/std of batter-quality-weighted whiff rate per pitch type.
     """
     sql = text("""
         SELECT pitch_type_code,
-            AVG(start_speed) AS avg_velo,
-            STDDEV(start_speed) AS std_velo,
-            AVG(pfx_z)  AS avg_ivb,
-            STDDEV(pfx_z)  AS std_ivb,
-            AVG(pfx_x)  AS avg_hbreak,
-            STDDEV(pfx_x)  AS std_hbreak,
-            AVG(spin_rate)  AS avg_spin,
-            STDDEV(spin_rate)  AS std_spin,
+            AVG(avg_velo)    AS avg_velo,    STDDEV(avg_velo)    AS std_velo,
+            AVG(avg_ivb)     AS avg_ivb,     STDDEV(avg_ivb)     AS std_ivb,
+            AVG(avg_hbreak)  AS avg_hbreak,  STDDEV(avg_hbreak)  AS std_hbreak,
+            AVG(avg_spin)    AS avg_spin,    STDDEV(avg_spin)    AS std_spin,
+            AVG(weighted_whiff)  AS avg_weighted_whiff,
+            STDDEV(weighted_whiff) AS std_weighted_whiff,
             COUNT(*) AS n_pitchers
         FROM (
             SELECT p.pitch_type_code, ab.pitcher_id,
-                AVG(p.start_speed)  AS start_speed,
-                AVG(ABS(p.pfx_z))   AS pfx_z,
-                AVG(ABS(p.pfx_x))   AS pfx_x,
-                AVG(p.spin_rate)    AS spin_rate
+                AVG(p.start_speed)  AS avg_velo,
+                AVG(ABS(p.pfx_z))   AS avg_ivb,
+                AVG(ABS(p.pfx_x))   AS avg_hbreak,
+                AVG(p.spin_rate)    AS avg_spin,
+                SUM(CASE WHEN p.call_code IN ('S','W','T')
+                    THEN COALESCE(0.267 / NULLIF(bw.whiff_weight, 0), 1.0)
+                    ELSE 0.0 END) /
+                NULLIF(SUM(CASE WHEN p.call_code IN ('S','W','T','F','X','D','E')
+                    THEN 1.0 ELSE 0.0 END), 0) AS weighted_whiff,
+                COUNT(*) AS n
             FROM mlb.pitches p
             JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
                 AND ab.at_bat_index = p.at_bat_index
             JOIN mlb.games g ON g.game_pk = p.game_pk
+            LEFT JOIN (
+                SELECT ab2.batter_id,
+                    LEAST(
+                        0.267 / NULLIF(
+                            AVG(CASE WHEN p2.call_code IN ('S','W','T') THEN 1.0 ELSE 0.0 END) /
+                            NULLIF(AVG(CASE WHEN p2.call_code IN ('S','W','T','F','X','D','E')
+                                THEN 1.0 ELSE 0.0 END), 0)
+                        , 0),
+                        5.0
+                    ) AS whiff_weight
+                FROM mlb.pitches p2
+                JOIN mlb.at_bats ab2 ON ab2.game_pk = p2.game_pk
+                    AND ab2.at_bat_index = p2.at_bat_index
+                JOIN mlb.games g2 ON g2.game_pk = p2.game_pk
+                WHERE g2.season = :season AND g2.game_type = 'R'
+                GROUP BY ab2.batter_id
+                HAVING SUM(CASE WHEN p2.call_code IN ('S','W','T','F','X','D','E')
+                    THEN 1 ELSE 0 END) >= 50
+            ) bw ON bw.batter_id = ab.batter_id
             WHERE g.season = :season AND g.game_type = 'R'
             AND p.pitch_type_code IN :pitch_types
             AND p.start_speed IS NOT NULL
@@ -332,7 +362,8 @@ def compute_league_physical_avgs(baseline_season: int, db) -> dict:
     avgs = {r['pitch_type_code']: dict(r) for r in rows}
     for pt, d in avgs.items():
         print(f"    {pt}: velo {float(d['avg_velo']):.1f}±{float(d['std_velo'] or 1.5):.1f} "
-              f"ivb {float(d['avg_ivb']):.3f}±{float(d['std_ivb'] or 0.05):.3f}")
+              f"ivb {float(d['avg_ivb']):.3f}±{float(d['std_ivb'] or 0.05):.3f} "
+              f"wtd_whiff {float(d['avg_weighted_whiff'] or 0):.3f}±{float(d['std_weighted_whiff'] or 0.05):.3f}")
     return avgs
 
 
@@ -498,8 +529,8 @@ def compute_location_score(pitcher_id: int, pitch_type: str,
 def compute_tunnel_score(pitcher_id: int, pitch_type: str,
                           db, season: int) -> float:
     """
-    Fastballs: scored on release-point consistency (lower std = better).
-    Breaking/offspeed: scored on movement divergence from pitcher's own fastball.
+    Tunnel score vs pitcher's own fastball.
+    Uses z-score normalization like physical score.
     """
     if pitch_type in ('FF', 'SI', 'FC'):
         sql = text("""
@@ -516,15 +547,22 @@ def compute_tunnel_score(pitcher_id: int, pitch_type: str,
         """)
         row = db.execute(sql, {"pid": pitcher_id, "pt": pitch_type,
                                 "season": season}).mappings().first()
-        if not row or not row['x0_std']:
+        if not row or not row['x0_std'] or int(row['pitches'] or 0) < 20:
             return 100.0
-        x0_std = float(row['x0_std'] or 0.15)
-        z0_std = float(row['z0_std'] or 0.15)
-        consistency = 1.0 / max(x0_std + z0_std, 0.01)
-        lg_consistency = 1.0 / 0.30
-        return round(min(150.0, (consistency / lg_consistency) * 100), 1)
 
-    # Breaking/offspeed: movement divergence from pitcher's fastball
+        x0_std = float(row['x0_std'])
+        z0_std = float(row['z0_std'])
+        total_std = x0_std + z0_std
+
+        # League avg total std ≈ 0.25 feet, stddev ≈ 0.08
+        # Inverted: lower release-point std = positive z = better
+        lg_mean = 0.25
+        lg_std = 0.08
+        z = (lg_mean - total_std) / lg_std
+        score = 100 + z * SCALE * 0.5  # dampen tunnel contribution
+        return round(max(70.0, min(130.0, score)), 1)
+
+    # For offspeed/breaking: movement divergence from fastball
     sql = text("""
         SELECT
             AVG(CASE WHEN p.pitch_type_code = :pt   THEN p.pfx_x END) AS pt_pfx_x,
@@ -545,21 +583,53 @@ def compute_tunnel_score(pitcher_id: int, pitch_type: str,
     row = db.execute(sql, {"pid": pitcher_id, "pt": pitch_type,
                             "season": season}).mappings().first()
 
-    if (not row or not row['fb_pitches'] or int(row['fb_pitches']) < 10
-            or any(row[k] is None for k in
-                   ['pt_pfx_x', 'pt_pfx_z', 'fb_pfx_x', 'fb_pfx_z'])):
+    if not row or not row['fb_pitches'] or int(row['fb_pitches']) < 20:
+        return 100.0
+    if any(row[k] is None for k in ['pt_pfx_x', 'pt_pfx_z', 'fb_pfx_x', 'fb_pfx_z']):
         return 100.0
 
     delta_x = abs(float(row['pt_pfx_x']) - float(row['fb_pfx_x']))
     delta_z = abs(float(row['pt_pfx_z']) - float(row['fb_pfx_z']))
     divergence = (delta_x ** 2 + delta_z ** 2) ** 0.5
 
-    league_divergence = {
-        'SL': 1.2, 'CH': 0.9, 'CU': 1.5, 'ST': 1.3,
-        'KC': 1.4, 'CS': 1.1, 'FS': 0.8,
-    }
-    lg_div = league_divergence.get(pitch_type, 1.0)
-    return round(min(150.0, (divergence / max(lg_div, 0.01)) * 100), 1)
+    # Compute league average divergence per pitch type from DB
+    lg_sql = text("""
+        SELECT
+            AVG(ABS(p.pfx_x - fb.avg_pfx_x) + ABS(p.pfx_z - fb.avg_pfx_z)) AS avg_div,
+            STDDEV(ABS(p.pfx_x - fb.avg_pfx_x) + ABS(p.pfx_z - fb.avg_pfx_z)) AS std_div
+        FROM mlb.pitches p
+        JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
+            AND ab.at_bat_index = p.at_bat_index
+        JOIN mlb.games g ON g.game_pk = p.game_pk
+        JOIN (
+            SELECT ab2.pitcher_id,
+                   AVG(p2.pfx_x) AS avg_pfx_x,
+                   AVG(p2.pfx_z) AS avg_pfx_z
+            FROM mlb.pitches p2
+            JOIN mlb.at_bats ab2 ON ab2.game_pk = p2.game_pk
+                AND ab2.at_bat_index = p2.at_bat_index
+            JOIN mlb.games g2 ON g2.game_pk = p2.game_pk
+            WHERE p2.pitch_type_code IN ('FF','SI')
+            AND g2.season = :season AND g2.game_type = 'R'
+            GROUP BY ab2.pitcher_id
+        ) fb ON fb.pitcher_id = ab.pitcher_id
+        WHERE p.pitch_type_code = :pt
+        AND g.season = :season AND g.game_type = 'R'
+        AND p.pfx_x IS NOT NULL AND p.pfx_z IS NOT NULL
+    """)
+    lg = db.execute(lg_sql, {"pt": pitch_type, "season": season}).mappings().first()
+
+    if not lg or not lg['avg_div'] or not lg['std_div']:
+        return 100.0
+
+    lg_mean = float(lg['avg_div'])
+    lg_std_val = float(lg['std_div'])
+    if lg_std_val == 0:
+        return 100.0
+
+    z = (divergence - lg_mean) / lg_std_val
+    score = 100 + z * SCALE * 0.5  # dampen tunnel
+    return round(max(70.0, min(130.0, score)), 1)
 
 
 # ── BUILD STUFF SCORES ────────────────────────────────────────────────────────
@@ -647,12 +717,12 @@ def build_stuff_scores(score_season: int, baseline_season: int, db):
             pitcher_id, pitcher_name, season, pitch_type_code, pitch_hand,
             avg_velo, avg_ivb, avg_hbreak, avg_spin,
             physical_score, location_score, tunnel_score, stuff_score,
-            weighted_whiff_rate, raw_whiff_rate, pitches
+            weighted_whiff_rate, raw_whiff_rate, whiff_score, pitches
         ) VALUES (
             :pitcher_id, :pitcher_name, :season, :pitch_type_code, :pitch_hand,
             :avg_velo, :avg_ivb, :avg_hbreak, :avg_spin,
             :physical_score, :location_score, :tunnel_score, :stuff_score,
-            :weighted_whiff_rate, :raw_whiff_rate, :pitches
+            :weighted_whiff_rate, :raw_whiff_rate, :whiff_score, :pitches
         )
         ON CONFLICT (pitcher_id, season, pitch_type_code) DO UPDATE SET
             physical_score      = EXCLUDED.physical_score,
@@ -661,6 +731,7 @@ def build_stuff_scores(score_season: int, baseline_season: int, db):
             stuff_score         = EXCLUDED.stuff_score,
             weighted_whiff_rate = EXCLUDED.weighted_whiff_rate,
             raw_whiff_rate      = EXCLUDED.raw_whiff_rate,
+            whiff_score         = EXCLUDED.whiff_score,
             pitches             = EXCLUDED.pitches,
             computed_at         = NOW()
     """)
@@ -688,10 +759,23 @@ def build_stuff_scores(score_season: int, baseline_season: int, db):
         )
         tunnel = compute_tunnel_score(pid, pt, db, score_season)
 
+        wtd_whiff = float(r['weighted_whiff_rate'] or 0)
+        raw_whiff = float(r['raw_whiff_rate'] or 0)
+
+        lg_wtd_whiff = float(league_phys.get(pt, {}).get('avg_weighted_whiff') or 0)
+        lg_wtd_whiff_std = float(league_phys.get(pt, {}).get('std_weighted_whiff') or 0)
+        if lg_wtd_whiff > 0 and lg_wtd_whiff_std > 0:
+            z_whiff = (wtd_whiff - lg_wtd_whiff) / lg_wtd_whiff_std
+            whiff_score = round(100.0 + z_whiff * SCALE, 1)
+            whiff_score = max(50.0, min(160.0, whiff_score))
+        else:
+            whiff_score = 100.0
+
         stuff_raw = (
-            physical * COMPONENT_WEIGHTS['physical'] +
-            location * COMPONENT_WEIGHTS['location'] +
-            tunnel   * COMPONENT_WEIGHTS['tunnel']
+            whiff_score  * COMPONENT_WEIGHTS['weighted_whiff'] +
+            physical     * COMPONENT_WEIGHTS['physical'] +
+            location     * COMPONENT_WEIGHTS['location'] +
+            tunnel       * COMPONENT_WEIGHTS['tunnel']
         )
         stuff = regress_to_mean(stuff_raw, n)
 
@@ -714,6 +798,7 @@ def build_stuff_scores(score_season: int, baseline_season: int, db):
             "stuff_score":        stuff,
             "weighted_whiff_rate": fv(r['weighted_whiff_rate']),
             "raw_whiff_rate":      fv(r['raw_whiff_rate']),
+            "whiff_score":         whiff_score,
             "pitches":            n,
         })
         stored += 1

@@ -6,6 +6,7 @@ import httpx
 from datetime import datetime
 import time
 import asyncio
+import math
 
 _cache: dict = {}
 router = APIRouter()
@@ -2476,6 +2477,178 @@ def pitcher_pitch_counts(pitcher_id: int, season: int = 2026, bat_side: str = No
     return {"pitcher_id": pitcher_id, "season": season, "bat_side": bat_side, "counts": [dict(r) for r in rows]}
 
 
+@router.get("/pitcher/{pitcher_id}/pitch-counts-full")
+def pitcher_pitch_counts_full(pitcher_id: int, season: int = 2026, db: Session = Depends(get_db)):
+    """Season + last-14-day pitch counts with velo/whiff/csw/usage, plus league averages."""
+    from sqlalchemy import text
+    from datetime import date, timedelta
+
+    cutoff_14 = (date.today() - timedelta(days=14)).isoformat()
+
+    _SELECT = """
+                p.pitch_type_code,
+                COUNT(*) as total_pitches,
+                SUM(CASE WHEN p.call_code IN ('B','*B','H') THEN 1 ELSE 0 END) as balls,
+                SUM(CASE WHEN p.call_code IN ('S','W','T','C','F','D','E','L','X') THEN 1 ELSE 0 END) as strikes,
+                ROUND(SUM(CASE WHEN p.call_code IN ('S','W','T','C','F','D','E','L','X') THEN 1.0 ELSE 0.0 END) /
+                    NULLIF(COUNT(*), 0) * 100 ::numeric, 1) as strike_pct,
+                ROUND(AVG(p.start_speed)::numeric, 1) as avg_velo,
+                ROUND(SUM(CASE WHEN p.call_code IN ('S','W','T') THEN 1.0 ELSE 0.0 END) /
+                    NULLIF(SUM(CASE WHEN p.call_code IN ('S','W','T','F','D','E','X') THEN 1.0 ELSE 0.0 END), 0) * 100
+                ::numeric, 1) as whiff_pct,
+                ROUND(SUM(CASE WHEN p.call_code IN ('S','W','T','C') THEN 1.0 ELSE 0.0 END) /
+                    NULLIF(COUNT(*), 0) * 100 ::numeric, 1) as csw_pct"""
+
+    def get_counts(bat_side=None, cutoff=None):
+        bat_filter = "AND ab.bat_side = :bat_side" if bat_side else ""
+        date_filter = "AND g.game_date >= :cutoff" if cutoff else "AND g.season = :season"
+        params = {"pid": pitcher_id, "season": season}
+        if bat_side:
+            params["bat_side"] = bat_side
+        if cutoff:
+            params["cutoff"] = cutoff
+        sql = text(f"""
+            WITH raw AS (
+                SELECT {_SELECT}
+                FROM mlb.pitches p
+                JOIN mlb.at_bats ab ON ab.game_pk=p.game_pk AND ab.at_bat_index=p.at_bat_index
+                JOIN mlb.games g ON g.game_pk=p.game_pk
+                WHERE ab.pitcher_id=:pid AND g.game_type='R'
+                AND p.pitch_type_code IS NOT NULL
+                {date_filter}
+                {bat_filter}
+                GROUP BY p.pitch_type_code
+                HAVING COUNT(*) >= 5
+            )
+            SELECT *,
+                ROUND(total_pitches * 100.0 / NULLIF(SUM(total_pitches) OVER(), 0) ::numeric, 1) as usage_pct
+            FROM raw ORDER BY total_pitches DESC
+        """)
+        return [dict(r) for r in db.execute(sql, params).mappings().all()]
+
+    league_sql = text(f"""
+        SELECT {_SELECT},
+            ROUND(AVG(p.start_speed)::numeric, 1) as league_avg_velo
+        FROM mlb.pitches p
+        JOIN mlb.at_bats ab ON ab.game_pk=p.game_pk AND ab.at_bat_index=p.at_bat_index
+        JOIN mlb.games g ON g.game_pk=p.game_pk
+        WHERE g.season=:season AND g.game_type='R'
+        AND p.pitch_type_code IS NOT NULL
+        GROUP BY p.pitch_type_code
+        HAVING COUNT(*) >= 500
+    """)
+    league_avg = {r["pitch_type_code"]: dict(r) for r in
+                  db.execute(league_sql, {"season": season}).mappings().all()}
+
+    return {
+        "pitcher_id": pitcher_id,
+        "season": season,
+        "overall": {"season": get_counts(), "last_14": get_counts(cutoff=cutoff_14)},
+        "lhh":     {"season": get_counts("L"), "last_14": get_counts("L", cutoff_14)},
+        "rhh":     {"season": get_counts("R"), "last_14": get_counts("R", cutoff_14)},
+        "league_avg": league_avg,
+    }
+
+
+@router.get("/pitcher/{pitcher_id}/pitch-group-splits")
+def pitcher_pitch_group_splits(pitcher_id: int, season: int = 2026, db: Session = Depends(get_db)):
+    """Pitch group (Hard/Breaking/Soft) splits for a pitcher vs batters, with season/14-day windows and league averages."""
+    from sqlalchemy import text
+    from datetime import date, timedelta
+
+    season_start = f"{season}-03-01"
+    cutoff_14 = (date.today() - timedelta(days=14)).isoformat()
+
+    def get_splits(cutoff, bat_side=None):
+        side_filter = "AND ab.bat_side = :bat_side" if bat_side else ""
+        params = {"pid": pitcher_id, "cutoff": cutoff}
+        if bat_side:
+            params["bat_side"] = bat_side
+        sql = text(f"""
+            SELECT
+                CASE
+                    WHEN p.pitch_type_code IN ('FF','SI','FC') THEN 'Hard'
+                    WHEN p.pitch_type_code IN ('CU','SL','ST','KC') THEN 'Breaking'
+                    WHEN p.pitch_type_code IN ('CH','FS') THEN 'Soft'
+                END as pitch_group,
+                COUNT(*) as pitches,
+                ROUND(
+                    SUM(CASE WHEN p.call_code IN ('S','W','T') THEN 1.0 ELSE 0.0 END) /
+                    NULLIF(SUM(CASE WHEN p.call_code IN ('S','W','T','F','D','E','X')
+                        THEN 1.0 ELSE 0.0 END), 0) * 100
+                ::numeric, 1) as whiff_pct,
+                ROUND(AVG(CASE WHEN p.call_code='X' AND p.launch_speed >= 95
+                    THEN 1.0 ELSE 0.0 END)::numeric * 100, 1) as hard_hit_pct,
+                ROUND(AVG(CASE WHEN p.call_code='X' THEN p.launch_speed END)::numeric, 1) as avg_ev,
+                ROUND(AVG(CASE WHEN p.call_code='X' THEN p.launch_angle END)::numeric, 1) as avg_la,
+                COUNT(CASE WHEN p.call_code='X' THEN 1 END) as bip,
+                ROUND(AVG(CASE WHEN p.call_code IN ('S','W','T','C','F','D','E','L','X')
+                    THEN 1.0 ELSE 0.0 END)::numeric * 100, 1) as strike_pct
+            FROM mlb.pitches p
+            JOIN mlb.at_bats ab ON ab.game_pk=p.game_pk AND ab.at_bat_index=p.at_bat_index
+            JOIN mlb.games g ON g.game_pk=p.game_pk
+            WHERE ab.pitcher_id = :pid
+            AND g.game_date >= :cutoff
+            AND g.game_type = 'R'
+            AND p.pitch_type_code IN ('FF','SI','FC','CU','SL','ST','KC','CH','FS')
+            {side_filter}
+            GROUP BY pitch_group
+            HAVING COUNT(*) >= 5
+            ORDER BY pitches DESC
+        """)
+        return [dict(r) for r in db.execute(sql, params).mappings().all()]
+
+    league_sql = text("""
+        SELECT
+            CASE
+                WHEN p.pitch_type_code IN ('FF','SI','FC') THEN 'Hard'
+                WHEN p.pitch_type_code IN ('CU','SL','ST','KC') THEN 'Breaking'
+                WHEN p.pitch_type_code IN ('CH','FS') THEN 'Soft'
+            END as pitch_group,
+            COUNT(*) as pitches,
+            ROUND(
+                SUM(CASE WHEN p.call_code IN ('S','W','T') THEN 1.0 ELSE 0.0 END) /
+                NULLIF(SUM(CASE WHEN p.call_code IN ('S','W','T','F','D','E','X')
+                    THEN 1.0 ELSE 0.0 END), 0) * 100
+            ::numeric, 1) as whiff_pct,
+            ROUND(AVG(CASE WHEN p.call_code='X' AND p.launch_speed >= 95
+                THEN 1.0 ELSE 0.0 END)::numeric * 100, 1) as hard_hit_pct,
+            ROUND(AVG(CASE WHEN p.call_code='X' THEN p.launch_speed END)::numeric, 1) as avg_ev,
+            ROUND(AVG(CASE WHEN p.call_code='X' THEN p.launch_angle END)::numeric, 1) as avg_la,
+            COUNT(CASE WHEN p.call_code='X' THEN 1 END) as bip,
+            ROUND(AVG(CASE WHEN p.call_code IN ('S','W','T','C','F','D','E','L','X')
+                THEN 1.0 ELSE 0.0 END)::numeric * 100, 1) as strike_pct
+        FROM mlb.pitches p
+        JOIN mlb.at_bats ab ON ab.game_pk=p.game_pk AND ab.at_bat_index=p.at_bat_index
+        JOIN mlb.games g ON g.game_pk=p.game_pk
+        WHERE g.game_date >= :cutoff
+        AND g.game_type = 'R'
+        AND p.pitch_type_code IN ('FF','SI','FC','CU','SL','ST','KC','CH','FS')
+        GROUP BY pitch_group
+        ORDER BY pitches DESC
+    """)
+    league_avg = {r["pitch_group"]: dict(r) for r in
+                  db.execute(league_sql, {"cutoff": season_start}).mappings().all()}
+
+    return {
+        "pitcher_id": pitcher_id,
+        "season": season,
+        "overall": {
+            "season": get_splits(season_start),
+            "last_14": get_splits(cutoff_14),
+        },
+        "vs_lhh": {
+            "season": get_splits(season_start, 'L'),
+            "last_14": get_splits(cutoff_14, 'L'),
+        },
+        "vs_rhh": {
+            "season": get_splits(season_start, 'R'),
+            "last_14": get_splits(cutoff_14, 'R'),
+        },
+        "league_avg": league_avg,
+    }
+
+
 @router.get("/marcel/{pitcher_id}")
 def marcel_projection(pitcher_id: int, season: int = 2026, db: Session = Depends(get_db)):
     """
@@ -2835,8 +3008,12 @@ def hitter_profile(batter_id: int, season: int = 2026, db: Session = Depends(get
         plus_stats.update({k: fg_row[k] for k in ("wrc_plus", "war", "hard_hit_pct", "barrel_pct", "avg_exit_velo")})
 
     # Pitch group splits
-    def get_group_splits(cutoff):
-        sql = text("""
+    def get_group_splits(cutoff, pitcher_hand=None):
+        hand_filter = "AND ab.pitch_hand = :phand" if pitcher_hand else ""
+        params = {"bid": batter_id, "cutoff": cutoff}
+        if pitcher_hand:
+            params["phand"] = pitcher_hand
+        sql = text(f"""
             SELECT
                 CASE
                     WHEN p.pitch_type_code IN ('FF','SI','FC') THEN 'Hard'
@@ -2865,15 +3042,54 @@ def hitter_profile(batter_id: int, season: int = 2026, db: Session = Depends(get
             AND g.game_date >= :cutoff
             AND g.game_type = 'R'
             AND p.pitch_type_code IN ('FF','SI','FC','CU','SL','ST','KC','CH','FS')
+            {hand_filter}
             GROUP BY pitch_group
             HAVING COUNT(*) >= 5
             ORDER BY pitches DESC
         """)
-        return db.execute(sql, {"bid": batter_id, "cutoff": cutoff}).mappings().all()
+        return [dict(r) for r in db.execute(sql, params).mappings().all()]
+
+    def get_league_avg_groups():
+        sql = text("""
+            SELECT
+                CASE
+                    WHEN p.pitch_type_code IN ('FF','SI','FC') THEN 'Hard'
+                    WHEN p.pitch_type_code IN ('CU','SL','ST','KC') THEN 'Breaking'
+                    WHEN p.pitch_type_code IN ('CH','FS') THEN 'Soft'
+                END as pitch_group,
+                COUNT(*) as pitches,
+                ROUND(
+                    SUM(CASE WHEN p.call_code IN ('S','W','T') THEN 1.0 ELSE 0.0 END) /
+                    NULLIF(SUM(CASE WHEN p.call_code IN ('S','W','T','F','D','E','X')
+                        THEN 1.0 ELSE 0.0 END), 0) * 100
+                ::numeric, 1) as whiff_pct,
+                ROUND(AVG(CASE WHEN p.call_code='X' AND p.launch_speed >= 95
+                    THEN 1.0 ELSE 0.0 END)::numeric * 100, 1) as hard_hit_pct,
+                ROUND(AVG(CASE WHEN p.call_code='X' THEN p.launch_speed END)::numeric, 1) as avg_ev,
+                ROUND(AVG(CASE WHEN p.call_code='X' THEN p.launch_angle END)::numeric, 1) as avg_la,
+                COUNT(CASE WHEN p.call_code='X' THEN 1 END) as bip,
+                ROUND(AVG(CASE WHEN p.call_code IN ('S','W','T','C','F','D','E','L','X')
+                    THEN 1.0 ELSE 0.0 END)::numeric * 100, 1) as strike_pct
+            FROM mlb.pitches p
+            JOIN mlb.at_bats ab ON ab.game_pk=p.game_pk AND ab.at_bat_index=p.at_bat_index
+            JOIN mlb.games g ON g.game_pk=p.game_pk
+            WHERE g.game_date >= :cutoff
+            AND g.game_type = 'R'
+            AND p.pitch_type_code IN ('FF','SI','FC','CU','SL','ST','KC','CH','FS')
+            GROUP BY pitch_group
+            ORDER BY pitches DESC
+        """)
+        return {r["pitch_group"]: dict(r) for r in
+                db.execute(sql, {"cutoff": season_start}).mappings().all()}
 
     groups_season = get_group_splits(season_start)
     groups_14 = get_group_splits(cutoff_14)
     groups_7 = get_group_splits(cutoff_7)
+    groups_season_lhp = get_group_splits(season_start, 'L')
+    groups_14_lhp = get_group_splits(cutoff_14, 'L')
+    groups_season_rhp = get_group_splits(season_start, 'R')
+    groups_14_rhp = get_group_splits(cutoff_14, 'R')
+    league_avg_groups = get_league_avg_groups()
 
     # Zone data
     zone_sql = text("""
@@ -3046,9 +3262,11 @@ def hitter_profile(batter_id: int, season: int = 2026, db: Session = Depends(get
         "season_stats": dict(season_stats) if season_stats else {},
         "plus_stats": plus_stats,
         "pitch_groups": {
-            "season": [dict(r) for r in groups_season],
-            "last_14": [dict(r) for r in groups_14],
-            "last_7": [dict(r) for r in groups_7],
+            "overall": {"season": groups_season, "last_14": groups_14},
+            "vs_lhp": {"season": groups_season_lhp, "last_14": groups_14_lhp},
+            "vs_rhp": {"season": groups_season_rhp, "last_14": groups_14_rhp},
+            "league_avg": league_avg_groups,
+            "last_7": groups_7,
         },
         "zones": {
             "season": zones_season,
@@ -3334,7 +3552,7 @@ def weather_today(db: Session = Depends(get_db)):
                gw.combined_hr_modifier, gw.fetched_at
         FROM mlb.game_weather gw
         JOIN mlb.games g ON g.game_pk = gw.game_pk
-        WHERE g.game_date = CURRENT_DATE
+        WHERE g.game_date = CURRENT_DATE::varchar
         ORDER BY gw.team_abbrev
     """)
     rows = db.execute(sql).mappings().all()
@@ -3348,12 +3566,17 @@ def daily_projections(
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import text
-    target = date or datetime.utcnow().strftime("%Y-%m-%d")
+    if date:
+        target = date
+    else:
+        from zoneinfo import ZoneInfo
+        target = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
     rows = db.execute(text("""
         SELECT dp.pitcher_id, dp.pitcher_name, dp.pitcher_hand, dp.team_abbrev, dp.opp_abbrev,
                dp.goose_plus, dp.bapv_plus, dp.proj_k_pct, dp.proj_hr_pct, dp.proj_hit_pct,
                dp.proj_ops, dp.proj_ks_6inn, dp.proj_bb_pct, dp.batters_simulated,
+               dp.proj_ks_f5, dp.proj_er_f5, dp.proj_ip_f5,
                dp.simulations_per_batter, dp.snapshot_date, dp.game_pk,
                ROUND(pk.pk_plus::numeric, 1) as pk_plus,
                ROUND(g3.goose3_plus::numeric, 1) as goose3_plus
@@ -3381,7 +3604,8 @@ def daily_projections(
 @router.post("/leaderboard/run-daily-projections")
 async def run_daily_projections(date: str = None):
     import os
-    target = date or datetime.utcnow().strftime("%Y-%m-%d")
+    from zoneinfo import ZoneInfo
+    target = date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
     proc = await asyncio.create_subprocess_exec(
         "python3", "/pipeline/mlb/build_daily_projections.py", "--date", target,
         env={**os.environ, "PYTHONPATH": "/app:/pipeline"},
@@ -3400,8 +3624,8 @@ def daily_batter_projections(
     db: Session = Depends(get_db),
 ):
     from sqlalchemy import text
-    from datetime import date as date_cls
-    target = snapshot_date or str(date_cls.today())
+    from zoneinfo import ZoneInfo
+    target = snapshot_date or datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
 
     rows = db.execute(text("""
         SELECT
@@ -3868,13 +4092,10 @@ def hitter_percentiles(batter_id: int, season: int = 2026, db: Session = Depends
     """Hitter percentile rankings + Backwards Helmet % and LHP/RHP swing rate splits."""
     from sqlalchemy import text
 
-    def run_swing_stats(pitch_hand=None):
-        extra = "AND ab.pitch_hand = :phand" if pitch_hand else ""
-        params = {"bid": batter_id, "season": season}
-        if pitch_hand:
-            params["phand"] = pitch_hand
-        sql = text(f"""
-            SELECT
+    from datetime import date as _date, timedelta as _timedelta
+    cutoff_14 = (_date.today() - _timedelta(days=14)).isoformat()
+
+    _SWING_SELECT = """
                 ROUND(AVG(CASE
                     WHEN p.balls_before IN (2,3) AND p.strikes_before = 0 AND p.balls_before = 2
                         THEN CASE WHEN p.call_code IN ('S','W','T','F','D','E','X') THEN 1.0 ELSE 0.0 END
@@ -3905,15 +4126,44 @@ def hitter_percentiles(batter_id: int, season: int = 2026, db: Session = Depends
                     AVG(CASE WHEN (p.zone IS NULL OR p.zone NOT BETWEEN 1 AND 9) AND p.call_code IN ('S','W','T','F','D','E','X') THEN 1.0 ELSE 0.0 END) /
                     NULLIF(AVG(CASE WHEN (p.zone IS NULL OR p.zone NOT BETWEEN 1 AND 9) THEN 1.0 ELSE 0.0 END), 0)
                 * 100, 1) as chase_pct,
-                COUNT(*) as total_pitches
+                COUNT(*) as total_pitches"""
+
+    def run_swing_stats(pitch_hand=None, cutoff=None):
+        hand_filter = "AND ab.pitch_hand = :phand" if pitch_hand else ""
+        date_filter = "AND g.game_date >= :cutoff" if cutoff else "AND g.season = :season"
+        params = {"bid": batter_id, "season": season}
+        if pitch_hand:
+            params["phand"] = pitch_hand
+        if cutoff:
+            params["cutoff"] = cutoff
+        sql = text(f"""
+            SELECT {_SWING_SELECT}
             FROM mlb.pitches p
             JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
                 AND ab.at_bat_index = p.at_bat_index
             JOIN mlb.games g ON g.game_pk = p.game_pk
             WHERE ab.batter_id = :bid
-            AND g.season = :season AND g.game_type = 'R'
+            AND g.game_type = 'R'
             AND p.balls_before IS NOT NULL
-            {extra}
+            {date_filter}
+            {hand_filter}
+        """)
+        return db.execute(sql, params).mappings().first()
+
+    def run_league_avg_swing_stats(pitch_hand=None):
+        hand_filter = "AND ab.pitch_hand = :phand" if pitch_hand else ""
+        params = {"season": season}
+        if pitch_hand:
+            params["phand"] = pitch_hand
+        sql = text(f"""
+            SELECT {_SWING_SELECT}
+            FROM mlb.pitches p
+            JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
+                AND ab.at_bat_index = p.at_bat_index
+            JOIN mlb.games g ON g.game_pk = p.game_pk
+            WHERE g.season = :season AND g.game_type = 'R'
+            AND p.balls_before IS NOT NULL
+            {hand_filter}
         """)
         return db.execute(sql, params).mappings().first()
 
@@ -3938,6 +4188,12 @@ def hitter_percentiles(batter_id: int, season: int = 2026, db: Session = Depends
     stats = run_swing_stats()
     stats_lhp = run_swing_stats('L')
     stats_rhp = run_swing_stats('R')
+    stats_14 = run_swing_stats(cutoff=cutoff_14)
+    stats_lhp_14 = run_swing_stats('L', cutoff=cutoff_14)
+    stats_rhp_14 = run_swing_stats('R', cutoff=cutoff_14)
+    stats_lg = run_league_avg_swing_stats()
+    stats_lg_lhp = run_league_avg_swing_stats('L')
+    stats_lg_rhp = run_league_avg_swing_stats('R')
 
     backwards_helmet = None
     if stats and stats["hitters_count_swing"] is not None and stats["pitchers_count_swing"] is not None:
@@ -4005,6 +4261,12 @@ def hitter_percentiles(batter_id: int, season: int = 2026, db: Session = Depends
         "swing_rates": build_swing_rates(stats),
         "swing_rates_lhp": build_swing_rates(stats_lhp),
         "swing_rates_rhp": build_swing_rates(stats_rhp),
+        "swing_rates_14": build_swing_rates(stats_14),
+        "swing_rates_lhp_14": build_swing_rates(stats_lhp_14),
+        "swing_rates_rhp_14": build_swing_rates(stats_rhp_14),
+        "swing_rates_lg": build_swing_rates(stats_lg),
+        "swing_rates_lg_lhp": build_swing_rates(stats_lg_lhp),
+        "swing_rates_lg_rhp": build_swing_rates(stats_lg_rhp),
         "juiced": dict(juiced) if juiced else {},
         "percentiles": {
             "juiced_plus": {
@@ -4845,12 +5107,11 @@ def game_batter_splits(game_pk: int, batter_id: int,
     if risp and (risp['pa'] or 0) >= 10:
         ops_splits.append({
             "label": "RISP",
-            "value": int(float(risp["hit_rate"] or 0) / 0.26 * 100),
+            "value": int(float(risp["hit_rate"] or 0) / 0.26),
             "pa": int(risp['pa'])
         })
 
     juiced_splits = []
-    juiced_splits.append({"label": f"Vs {'LHP' if pitch_hand == 'L' else 'RHP'}", "value": None, "pa": 0})
     for pt, data in juiced_by_pitch.items():
         if pt in mix_codes:
             juiced_splits.append({
@@ -4919,7 +5180,7 @@ def game_batter_splits(game_pk: int, batter_id: int,
     }
 
 
-@router.get("/lineup-stats/batters")
+@router.get("/lineup-batter-stats")
 def lineup_batter_stats(ids: str, season: int = 2026, db: Session = Depends(get_db)):
     from sqlalchemy import text
     batter_ids = [int(i) for i in ids.split(',') if i.strip().isdigit()]
@@ -4952,7 +5213,7 @@ def lineup_batter_stats(ids: str, season: int = 2026, db: Session = Depends(get_
     return {r['player_id']: dict(r) for r in rows}
 
 
-@router.get("/lineup-stats/pitchers")
+@router.get("/lineup-pitcher-stats")
 def lineup_pitcher_stats(ids: str, season: int = 2026, db: Session = Depends(get_db)):
     from sqlalchemy import text
     pitcher_ids = [int(i) for i in ids.split(',') if i.strip().isdigit()]
@@ -5180,4 +5441,278 @@ def get_model_scores(
              'metric': s['metric']}
             for s in season_avgs
         ],
+    }
+
+
+# ── PROP TRACKER ──────────────────────────────────────────────────────────────
+
+def _poisson_over(lam: float, line: float) -> float:
+    """P(X >= ceil(line)) — probability over prop hits."""
+    if lam <= 0:
+        return 0.03
+    k = int(math.ceil(line))
+    cumulative = 0.0
+    log_lam = math.log(lam) if lam > 0 else 0
+    log_term = -lam
+    for i in range(k):
+        cumulative += math.exp(log_term)
+        if i < k - 1:
+            log_term += log_lam - math.log(i + 1)
+    return round(max(0.03, min(0.97, 1.0 - cumulative)), 3)
+
+
+def _poisson_under(lam: float, line: float) -> float:
+    """P(X <= floor(line)) — probability under prop hits."""
+    if lam <= 0:
+        return 0.97
+    k = int(math.floor(line))
+    cumulative = 0.0
+    log_lam = math.log(lam) if lam > 0 else 0
+    log_term = -lam
+    for i in range(k + 1):
+        cumulative += math.exp(log_term)
+        if i < k:
+            log_term += log_lam - math.log(i + 1)
+    return round(max(0.03, min(0.97, cumulative)), 3)
+
+
+@router.get("/props/players/search")
+def props_player_search(q: str = "", db: Session = Depends(get_db)):
+    """Search today's projected pitchers and batters for prop tracker."""
+    from sqlalchemy import text
+    from datetime import date
+    today = str(date.today())
+    pat = f"%{q.lower().strip()}%"
+
+    # Fall back to most recent snapshot if today has no data yet
+    snap = db.execute(text("""
+        SELECT MAX(snapshot_date) FROM mlb.daily_projections
+        WHERE snapshot_date <= :d
+    """), {"d": today}).scalar()
+    if not snap:
+        return {"pitchers": [], "batters": []}
+    snap = str(snap)
+
+    pitchers = db.execute(text("""
+        SELECT dp.pitcher_id    AS player_id,
+               dp.pitcher_name  AS name,
+               dp.game_pk,
+               dp.proj_ks_6inn,
+               dp.proj_ks_f5,
+               dp.proj_er_f5,
+               dp.proj_k_pct,
+               'pitcher'        AS player_type
+        FROM mlb.daily_projections dp
+        WHERE dp.snapshot_date = :d
+          AND LOWER(dp.pitcher_name) LIKE :q
+        ORDER BY dp.pitcher_name
+        LIMIT 15
+    """), {"d": snap, "q": pat}).mappings().all()
+
+    batters = db.execute(text("""
+        SELECT dbp.batter_id       AS player_id,
+               dbp.batter_name     AS name,
+               dbp.game_pk,
+               dbp.proj_tb,
+               dbp.proj_hr_pct,
+               dbp.proj_k_pct,
+               dbp.opp_pitcher_name,
+               'batter'            AS player_type
+        FROM mlb.daily_batter_projections dbp
+        WHERE dbp.snapshot_date = :d
+          AND LOWER(dbp.batter_name) LIKE :q
+        ORDER BY dbp.batter_name
+        LIMIT 15
+    """), {"d": snap, "q": pat}).mappings().all()
+
+    return {
+        "pitchers": [dict(p) for p in pitchers],
+        "batters":  [dict(b) for b in batters],
+    }
+
+
+@router.get("/props/confidence")
+def props_confidence(
+    player_id: int,
+    player_type: str,
+    stat: str,
+    line: float,
+    direction: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Return pre-game probability and projection for a prop.
+    stat: ks | f5_ks | er | hr | tb | hits
+    direction: over | under
+    """
+    from sqlalchemy import text
+    from datetime import date
+    today = str(date.today())
+
+    snap = db.execute(text("""
+        SELECT MAX(snapshot_date) FROM mlb.daily_projections WHERE snapshot_date <= :d
+    """), {"d": today}).scalar()
+    snap = str(snap) if snap else today
+
+    prob = None
+    proj_value = None
+    label = ""
+
+    if player_type == "pitcher":
+        row = db.execute(text("""
+            SELECT proj_ks_6inn, proj_ks_f5, proj_er_f5, proj_k_pct, proj_ops
+            FROM mlb.daily_projections
+            WHERE pitcher_id = :pid AND snapshot_date = :d
+            LIMIT 1
+        """), {"pid": player_id, "d": snap}).mappings().first()
+
+        if not row:
+            raise HTTPException(404, "No projection found for pitcher today")
+
+        if stat == "ks":
+            lam = float(row["proj_ks_6inn"] or 0)
+            proj_value = lam
+            label = f"Proj {lam:.1f} Ks"
+        elif stat == "f5_ks":
+            lam = float(row["proj_ks_f5"] or 0)
+            proj_value = lam
+            label = f"Proj {lam:.1f} F5 Ks"
+        elif stat == "er":
+            lam = float(row["proj_er_f5"] or 0)
+            proj_value = lam
+            label = f"Proj {lam:.1f} ER (F5)"
+        else:
+            raise HTTPException(400, f"Unknown pitcher stat: {stat}")
+
+        prob = _poisson_over(lam, line) if direction == "over" else _poisson_under(lam, line)
+
+    elif player_type == "batter":
+        row = db.execute(text("""
+            SELECT proj_tb, proj_hr_pct, proj_k_pct, proj_hit_pct
+            FROM mlb.daily_batter_projections
+            WHERE batter_id = :bid AND snapshot_date = :d
+            ORDER BY simulations DESC NULLS LAST
+            LIMIT 1
+        """), {"bid": player_id, "d": snap}).mappings().first()
+
+        if not row:
+            raise HTTPException(404, "No projection found for batter today")
+
+        if stat == "hr":
+            p = float(row["proj_hr_pct"] or 0) / 100.0
+            proj_value = round(p * 100, 1)
+            label = f"Proj {proj_value:.1f}% HR chance"
+            # Bernoulli: P(at least 1 HR) = p
+            prob = round(max(0.03, min(0.97, p)), 3) if direction == "over" else round(max(0.03, min(0.97, 1 - p)), 3)
+        elif stat == "tb":
+            lam = float(row["proj_tb"] or 0)
+            proj_value = lam
+            label = f"Proj {lam:.2f} TB"
+            prob = _poisson_over(lam, line) if direction == "over" else _poisson_under(lam, line)
+        elif stat == "hits":
+            hit_pct = float(row["proj_hit_pct"] or 0) / 100.0
+            lam = hit_pct * 3.8  # ~3.8 AB per game
+            proj_value = round(lam, 2)
+            label = f"Proj {lam:.2f} hits"
+            prob = _poisson_over(lam, line) if direction == "over" else _poisson_under(lam, line)
+        else:
+            raise HTTPException(400, f"Unknown batter stat: {stat}")
+    else:
+        raise HTTPException(400, f"Unknown player_type: {player_type}")
+
+    return {
+        "probability": prob,
+        "proj_value": proj_value,
+        "label": label,
+        "stat": stat,
+        "line": line,
+        "direction": direction,
+    }
+
+
+@router.get("/props/live/{game_pk}")
+async def props_live(game_pk: int, player_id: int, player_type: str, stat: str):
+    """
+    Fetch current stat value from the MLB live boxscore API.
+    Returns current_value, game_state, inning, and score.
+    """
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        bs_resp, ls_resp = await asyncio.gather(
+            client.get(f"https://statsapi.mlb.com/api/v1/game/{game_pk}/boxscore"),
+            client.get(f"https://statsapi.mlb.com/api/v1/game/{game_pk}/linescore"),
+        )
+
+    boxscore  = bs_resp.json()  if bs_resp.status_code == 200 else {}
+    linescore = ls_resp.json()  if ls_resp.status_code == 200 else {}
+
+    # Game state from linescore
+    inning       = linescore.get("currentInning")
+    inning_half  = linescore.get("inningHalf", "")
+    home_runs    = linescore.get("teams", {}).get("home", {}).get("runs")
+    away_runs    = linescore.get("teams", {}).get("away", {}).get("runs")
+
+    # Determine game state
+    innings_data = linescore.get("innings", [])
+    is_final = (
+        inning is not None
+        and inning >= 9
+        and inning_half == "Bottom"
+        and len(innings_data) >= 9
+        and linescore.get("isTopInning") is False
+    )
+    # Better: check via boxscore info field
+    bs_info = boxscore.get("info", [])
+    for entry in bs_info:
+        if entry.get("label") == "Status":
+            if "Final" in (entry.get("value") or ""):
+                is_final = True
+
+    if inning is None:
+        game_state = "Preview"
+    elif is_final:
+        game_state = "Final"
+    else:
+        game_state = "Live"
+
+    # Find player stats in boxscore
+    current_value = None
+    ip_pitched = None
+    player_key = f"ID{player_id}"
+
+    for side in ("home", "away"):
+        players = boxscore.get("teams", {}).get(side, {}).get("players", {})
+        if player_key not in players:
+            continue
+        pdata = players[player_key]
+
+        if player_type == "pitcher":
+            pit = pdata.get("stats", {}).get("pitching", {})
+            ip_str = pit.get("inningsPitched", "0")
+            try:
+                ip_pitched = float(ip_str)
+            except (ValueError, TypeError):
+                ip_pitched = 0.0
+            if stat in ("ks", "f5_ks"):
+                current_value = pit.get("strikeOuts", 0)
+            elif stat == "er":
+                current_value = pit.get("earnedRuns", 0)
+
+        elif player_type == "batter":
+            bat = pdata.get("stats", {}).get("batting", {})
+            if stat == "hr":
+                current_value = bat.get("homeRuns", 0)
+            elif stat == "tb":
+                current_value = bat.get("totalBases", 0)
+            elif stat == "hits":
+                current_value = bat.get("hits", 0)
+        break
+
+    return {
+        "current_value": current_value,
+        "game_state": game_state,
+        "inning": inning,
+        "inning_half": inning_half,
+        "ip_pitched": ip_pitched,
+        "home_runs": home_runs,
+        "away_runs": away_runs,
     }

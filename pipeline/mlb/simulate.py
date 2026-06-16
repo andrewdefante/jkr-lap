@@ -41,12 +41,14 @@ COUNT_SWING_RATE = {
 # Module-level cache for league mix (computed once per process)
 _league_mix_cache = None
 
+# Per-BIP rates from 2026 MLB actuals (May 2026, n=15,259 BIP)
+# BABIP=.280, SLG/BIP=0.499, HR/BIP=0.040
 BASE_CONTACT = {
-    'single': 0.155,
-    'double': 0.050,
-    'triple': 0.005,
-    'home_run': LEAGUE_HR_RATE,
-    'field_out': 0.756,
+    'single':   0.199,  # 19.9% of BIP
+    'double':   0.065,  # 6.5% of BIP
+    'triple':   0.005,  # 0.5% of BIP
+    'home_run': 0.040,  # 4.0% of BIP
+    'field_out': 0.691, # 69.1% of BIP
 }
 
 RUN_VALUES = {
@@ -205,6 +207,34 @@ def load_pitcher_overall_mix(pitcher_id: int, bat_side: str, db: Session) -> lis
     } for r in rows]
 
 
+def load_pitcher_zone_rate(pitcher_id: int, db: Session) -> float:
+    """
+    Pitcher's actual zone rate (fraction of pitches in strike zone).
+    Returns float between 0.45 and 0.72. Defaults to MLB average 0.560 (shadow-zone-inclusive).
+    """
+    sql = text("""
+        SELECT
+            AVG(CASE 
+                WHEN p.zone BETWEEN 1 AND 9 THEN 1.0
+                WHEN p.zone BETWEEN 11 AND 14 THEN 0.12
+                ELSE 0.0 END) as zone_rate,
+            COUNT(*) as pitches
+        FROM mlb.pitches p
+        JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
+            AND ab.at_bat_index = p.at_bat_index
+        JOIN mlb.games g ON g.game_pk = p.game_pk
+        WHERE ab.pitcher_id = :pid
+        AND g.season = 2026 AND g.game_type = 'R'
+        AND p.zone IS NOT NULL
+        AND p.call_code IN ('B','C','S','W','T','F','X')
+        HAVING COUNT(*) >= 50
+    """)
+    row = db.execute(sql, {"pid": pitcher_id}).mappings().first()
+    if row and row['zone_rate']:
+        return round(max(0.40, min(0.62, float(row['zone_rate']))), 3)
+    return 0.510  # MLB average including shadow zone weighting
+
+
 def load_batter_tends(batter_id: int, db: Session) -> dict:
     """Load batter pitch type tendencies."""
     sql = text("""
@@ -299,7 +329,7 @@ def load_stuff_score(pitcher_id: int, bat_side: str, db: Session) -> dict:
     for r in rows:
         pt = r['pitch_type_code']
         stuff = float(r['stuff_score'] or 100)
-        adj = 1.0 + (stuff - 100) / 180
+        adj = max(0.50, min(2.00, 1.0 + (stuff - 100) / 60))
         adjustments[pt] = {
             'stuff_score': stuff,
             'whiff_mult': round(adj, 3),
@@ -392,6 +422,7 @@ def load_pk_phr_adjustments(pitcher_id: int, bat_side: str,
         SELECT
             COALESCE(pk.pitch_type_code, phr.pitch_type_code) AS pitch_type_code,
             pk.pk_plus,
+            pk.whiff_pct,
             phr.phr_plus,
             so.stuff_score,
             COALESCE(pk.pitches, phr.pitches) AS pitches
@@ -444,8 +475,11 @@ def load_pk_phr_adjustments(pitcher_id: int, bat_side: str,
         phr   = float(r['phr_plus']   or 100)
         stuff = float(r['stuff_score'] or 100)
 
-        pk_adj  = 1.0 + (pk  - 100) / 180
-        phr_adj = 1.0 + (phr - 100) / 180
+        pk_adj  = max(0.50, min(2.00, 1.0 + (pk  - 100) / 60))
+        phr_adj = max(0.50, min(2.00, 1.0 + (phr - 100) / 60))
+
+        # Use season whiff rate from pk_scores as base (more stable than count-mix)
+        season_whiff = float(r.get('whiff_pct') or 0)
 
         adjustments[pt] = {
             'whiff_mult':   round(pk_adj, 3),
@@ -455,6 +489,7 @@ def load_pk_phr_adjustments(pitcher_id: int, bat_side: str,
             'pk_plus':      round(pk, 1),
             'phr_plus':     round(phr, 1),
             'stuff_score':  round(stuff, 1),
+            'season_whiff': round(season_whiff, 3),
         }
 
     return adjustments
@@ -504,9 +539,9 @@ def load_goose3_adjustments(pitcher_id: int, bat_side: str,
         goose3 = float(r['goose3_plus']  or 100)
 
         # Stuff Score drives whiff (best K predictor r=0.358)
-        stuff_adj = 1.0 + (stuff - 100) / 180
+        stuff_adj = max(0.50, min(2.00, 1.0 + (stuff - 100) / 60))
         # Goose+2 drives contact quality and HR (best HR predictor r=-0.298)
-        g2_adj = 1.0 + (goose2 - 100) / 180
+        g2_adj = max(0.50, min(2.00, 1.0 + (goose2 - 100) / 60))
 
         adjustments[pt] = {
             'whiff_mult':   round(stuff_adj, 3),
@@ -702,27 +737,66 @@ def select_pitch(mix: list) -> dict:
 
 # ── BATTER OUTCOME ────────────────────────────────────────────────────────────
 
-def get_contact_probs(pitch_type: str, batter_tends: dict) -> dict:
-    """Get batter-specific contact outcome probabilities."""
+def get_contact_probs(pitch_type: str, batter_tends: dict,
+                      defense: dict = None) -> dict:
+    """Get batter-specific contact outcome probabilities.
+
+    Calibrated to 2026 MLB actuals (May 2026, n=15,259 BIP):
+    BABIP=.280, SLG/BIP=0.499, HR/BIP=0.040, HardHit%=39.5%
+
+    HR driven primarily by hard_hit_rate (captures both EV and launch angle).
+    EV used only as minor secondary signal (dampened 600x) since contact EV
+    in GUMBO is small-sample and doesn't capture launch angle.
+
+    defense: team_defense row for opposing team — adjusts BABIP and XBH rate.
+    """
     tend = batter_tends.get(pitch_type, {})
     hh_rate = float(tend.get('hard_hit_rate') or 0.395)
-    avg_ev = float(tend.get('avg_exit_velo') or 88.0)
-    woba = float(tend.get('avg_woba_on_contact') or 0.380)
+    avg_ev  = float(tend.get('avg_exit_velo') or 88.0)
 
-    hr_adj = LEAGUE_HR_RATE * (hh_rate / 0.395) * max(0.5, (avg_ev - 85) / 10)
-    hr_adj = max(0.01, min(0.15, hr_adj))
-    hit_adj = woba / 0.380
+    # HR/BIP: hard hit rate is primary driver
+    # League avg: hh_rate=39.5% → HR/BIP=4.0% (2026 actuals)
+    # Linear scale: 0% hh → ~0% HR, 80% hh → ~8% HR
+    hr_from_hh = max(0.001, min(0.10, 0.040 * (hh_rate / 0.395)))
 
-    single_p = BASE_CONTACT['single'] * hit_adj
-    double_p = BASE_CONTACT['double'] * hit_adj
-    triple_p = BASE_CONTACT['triple'] * hit_adj
-    out_p = max(0.4, 1.0 - single_p - double_p - triple_p - hr_adj)
+    # EV adds minor signal (±1.5% max) — dampened to avoid small-sample inflation
+    ev_boost = max(-0.015, min(0.015, (avg_ev - 88.0) / 600.0))
+    hr_adj = max(0.001, min(0.12, hr_from_hh + ev_boost))
+
+    # BABIP scales gently with EV (±8% per 10mph around 88)
+    babip = max(0.15, min(0.40, 0.280 * (1.0 + (avg_ev - 88.0) / 125.0)))
+
+    # Defense adjustment: scale BABIP and XBH rate by opposing team's defensive profile.
+    # League avg BABIP allowed = .290. COL (.338) → +16%, LAD (.253) → -13%.
+    if defense:
+        def_babip = defense.get('babip_allowed', 0.290)
+        defense_mult = max(0.80, min(1.25, def_babip / 0.290))
+        babip = min(0.40, babip * defense_mult)
+
+    non_hr_hit = babip * (1.0 - hr_adj)
+
+    # Split non-HR hits: doubles scale with EV, singles absorb remainder
+    double_frac = max(0.10, min(0.40, 0.24 * (1.0 + (avg_ev - 88.0) / 60.0)))
+    triple_frac = 0.02
+
+    # Defense XBH adjustment: poor defenses allow more gap hits
+    if defense:
+        def_xbh = defense.get('xbh_rate', 0.220)
+        xbh_mult = max(0.75, min(1.30, def_xbh / 0.220))
+        double_frac = max(0.10, min(0.40, double_frac * xbh_mult))
+
+    single_frac = 1.0 - double_frac - triple_frac
+
+    single_p = non_hr_hit * single_frac
+    double_p = non_hr_hit * double_frac
+    triple_p = non_hr_hit * triple_frac
+    out_p    = max(0.30, 1.0 - single_p - double_p - triple_p - hr_adj)
 
     return {
-        'home_run': hr_adj,
-        'single': single_p,
-        'double': double_p,
-        'triple': triple_p,
+        'home_run':  hr_adj,
+        'single':    single_p,
+        'double':    double_p,
+        'triple':    triple_p,
         'field_out': out_p,
     }
 
@@ -737,6 +811,21 @@ def resolve_contact(pitch_type: str, batter_tends: dict) -> str:
         if rand <= cum:
             return outcome
     return 'field_out'
+
+
+def load_team_defense(opp_team_id: int, db) -> dict:
+    """Load defensive metrics for opposing team. Keyed by team_id to avoid abbrev mismatch."""
+    if not opp_team_id:
+        return {}
+    row = db.execute(text("""
+        SELECT babip_allowed, slg_allowed, xbh_rate,
+               single_rate, double_rate, triple_rate
+        FROM mlb.team_defense
+        WHERE team_id = :tid AND season = 2026
+    """), {"tid": opp_team_id}).mappings().first()
+    if row:
+        return dict(row)
+    return {}
 
 
 def load_weather_modifier(game_pk: int, db) -> float:
@@ -899,14 +988,16 @@ def load_game_state_adjustments(pitcher_id: int, batter_id: int,
 def resolve_contact_v2(pitch_type: str, batter_tends: dict,
                         contact_mult: float = 1.0,
                         hr_mult: float = 1.0,
-                        weather_hr_mult: float = 1.0) -> str:
+                        weather_hr_mult: float = 1.0,
+                        defense: dict = None) -> str:
     """
     Resolve ball-in-play with Juiced+ 2 batter adjustments and weather modifier.
     contact_mult > 1.0 = better hitter, more likely to get hits.
     hr_mult > 1.0 = better hitter, more likely to hit HR.
     weather_hr_mult: combined wind+temp HR modifier from game_weather table.
+    defense: team_defense row — adjusts BABIP and XBH rate for opposing team.
     """
-    probs = get_contact_probs(pitch_type, batter_tends)
+    probs = get_contact_probs(pitch_type, batter_tends, defense=defense)
 
     adjusted = {}
     for outcome, prob in probs.items():
@@ -940,7 +1031,10 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                 goose2_adj: dict = None,
                 juiced2_adj: dict = None,
                 weather_hr_mult: float = 1.0,
-                splits_adj: dict = None) -> dict:
+                splits_adj: dict = None,
+                zone_rate: float = 0.510,
+                batter_overall: dict = None,
+                defense: dict = None) -> dict:
     """
     Simulate a single plate appearance.
     balls_start/strikes_start: starting count (default 0-0)
@@ -976,7 +1070,14 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
 
         if goose2_adj and pt in goose2_adj:
             adj = goose2_adj[pt]
-            pitcher_whiff = min(0.95, pitcher_whiff * adj['whiff_mult'])
+            # Use season whiff rate as base if available — it already encodes pitcher
+            # quality, so skip whiff_mult (which measures the same signal) to avoid
+            # double-counting. Fall back to count-mix × whiff_mult when unavailable.
+            season_whiff = adj.get('season_whiff', 0)
+            if season_whiff > 0:
+                pitcher_whiff = min(0.95, season_whiff)
+            else:
+                pitcher_whiff = min(0.95, pitcher_whiff * adj['whiff_mult'])
             csw = min(0.95, csw * adj['csw_mult'])
             pitcher_contact_mult = adj.get('contact_mult', 1.0)
             pitcher_hr_mult = adj.get('hr_mult', 1.0)
@@ -984,18 +1085,34 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
             pitcher_contact_mult = 1.0
             pitcher_hr_mult = 1.0
 
-        # in_zone only used to resolve called strike vs ball on non-swings
-        in_zone = random.random() < min(csw * 1.5, 0.75)
+        in_zone = random.random() < zone_rate
 
         tend = batter_tends.get(pt, {})
-        batter_whiff = float(tend.get('whiff_rate') or LEAGUE_WHIFF)
-        chase = float(tend.get('chase_rate') or LEAGUE_CHASE)
+        overall = batter_overall or {}
+        batter_whiff = float(tend.get('whiff_rate') or overall.get('whiff_rate') or LEAGUE_WHIFF)
+        batter_swing = float(tend.get('swing_rate') or overall.get('swing_rate') or 0.46)
+        batter_contact = float(tend.get('contact_rate') or overall.get('contact_rate') or 0.78)
+        batter_zone_swing = float(tend.get('zone_swing_rate') or overall.get('zone_swing_rate') or 0.670)
+        batter_chase_direct = float(tend.get('chase_rate') or overall.get('chase_rate') or LEAGUE_CHASE)
 
-        # Count-specific swing rate (empirical); batter chase tendency scales it
-        # relative to league average so batter individuality is preserved.
-        base_swing = COUNT_SWING_RATE.get((balls, strikes), 0.46)
-        chase_adj = chase / LEAGUE_CHASE
-        swing_prob = max(0.05, min(0.95, base_swing * chase_adj))
+        if in_zone:
+            # Use batter's actual zone swing rate, adjusted by count
+            count_zone_adj = {
+                (0,0): 0.95, (0,1): 1.00, (0,2): 1.05,
+                (1,0): 0.92, (1,1): 0.98, (1,2): 1.05,
+                (2,0): 0.88, (2,1): 0.95, (2,2): 1.05,
+                (3,0): 0.60, (3,1): 0.88, (3,2): 1.05,
+            }.get((balls, strikes), 1.00)
+            swing_prob = max(0.10, min(0.95, batter_zone_swing * count_zone_adj))
+        else:
+            # Use batter's actual chase rate, adjusted by count
+            count_chase_adj = {
+                (0,0): 0.97, (0,1): 1.09, (0,2): 1.26,
+                (1,0): 0.92, (1,1): 1.05, (1,2): 1.25,
+                (2,0): 0.81, (2,1): 1.00, (2,2): 1.21,
+                (3,0): 0.46, (3,1): 0.90, (3,2): 1.17,
+            }.get((balls, strikes), 1.00)
+            swing_prob = max(0.02, min(0.70, batter_chase_direct * count_chase_adj))
 
         swings = random.random() < swing_prob
 
@@ -1009,8 +1126,21 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
             })
 
         if swings:
-            whiff_prob = (pitcher_whiff * 0.60 + batter_whiff * 0.40) * k_mult
-            if random.random() < min(whiff_prob, 0.95):
+            # Batter whiff modifier relative to league average
+            # batter_whiff is per-pitch; LEAGUE_WHIFF=0.267 per-pitch
+            # modifier < 1.0 = contact hitter, > 1.0 = free swinger
+            batter_whiff_mod = batter_whiff / LEAGUE_WHIFF
+
+            if in_zone:
+                # Pitcher stuff (80%) + batter contact tendency (20%)
+                batter_contact_mod = (1.0 - batter_contact) / (1.0 - 0.78)
+                # Apply batter whiff modifier directly — contact hitters suppress K%
+                whiff_prob = pitcher_whiff * (0.65 + 0.35 * batter_whiff_mod) * k_mult
+            else:
+                # Out of zone: pitcher (70%) + batter chase/whiff (30%)
+                whiff_prob = pitcher_whiff * (0.70 + 0.30 * batter_whiff_mod) * k_mult
+            whiff_prob = min(whiff_prob, 0.95)
+            if random.random() < whiff_prob:
                 strikes += 1
                 if record_pitches:
                     pitch_log[-1]["outcome"] = "whiff"
@@ -1024,7 +1154,12 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                 # 2-strike counts (more desperate, more fair contact).
                 # Calibrated so first-pitch BIP ≈ 7% (real MLB) vs 14% with
                 # the old flat 0.40, which was also suppressing walk rates.
-                foul_prob = {0: 0.70, 1: 0.55}.get(strikes, 0.35)
+                # Foul rate scales with batter contact ability
+                # TruMedia: high contact batters (Arraez 92%) foul more (43.7%)
+                # Low contact batters (Schwarber 67%) foul less (38.9%)
+                base_foul = {0: 0.48, 1: 0.46, 2: 0.40}.get(strikes, 0.44)
+                contact_scale = max(0.85, min(1.15, batter_contact / 0.78))
+                foul_prob = max(0.28, min(0.58, base_foul * contact_scale))
                 if random.random() < foul_prob:
                     if strikes < 2:
                         strikes += 1
@@ -1034,7 +1169,8 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                     result = resolve_contact_v2(pt, batter_tends,
                                                 batter_contact_mult * pitcher_contact_mult,
                                                 batter_hr_mult * pitcher_hr_mult,
-                                                weather_hr_mult)
+                                                weather_hr_mult,
+                                                defense=defense)
                     if record_pitches:
                         pitch_log[-1]["outcome"] = result
                     return {"result": result,
@@ -1053,7 +1189,7 @@ def simulate_pa(count_mix: dict, lg_mix: dict,
                 balls += 1
                 if record_pitches:
                     pitch_log[-1]["outcome"] = "ball"
-                walk_threshold = max(2, round(4 / bb_mult)) if bb_mult > 1.0 else 4
+                walk_threshold = max(3, round(4 / bb_mult)) if bb_mult > 1.0 else 4
                 if balls >= walk_threshold:
                     return {"result": "walk",
                             "pitches": pitch_log,
@@ -1114,7 +1250,8 @@ def run_simulation(pitcher_id: int, batter_id: int,
                    on_third: bool = False,
                    outs: int = 0,
                    tto: int = 1,
-                   season: int = 2026) -> dict:
+                   season: int = 2026,
+                   opp_team_id: int = None) -> dict:
     """
     Full simulation runner. Returns aggregated results + sample PAs.
 
@@ -1141,7 +1278,9 @@ def run_simulation(pitcher_id: int, batter_id: int,
         pitcher_adj = load_pk_phr_adjustments(pitcher_id, bat_side, db)
 
     juiced2_adj  = load_juiced2_batter_adjustments(batter_id, db)
+    zone_rate    = load_pitcher_zone_rate(pitcher_id, db)
     weather_mult = load_weather_modifier(game_pk, db)
+    defense      = load_team_defense(opp_team_id, db) if opp_team_id else {}
 
     # Three split layers; combine multiplicatively, clamp to [0.60, 1.50]
     base_splits = load_game_state_adjustments(
@@ -1186,7 +1325,9 @@ def run_simulation(pitcher_id: int, batter_id: int,
                          goose2_adj=pitcher_adj if pitcher_adj else None,
                          juiced2_adj=juiced2_adj if juiced2_adj else None,
                          weather_hr_mult=weather_mult,
-                         splits_adj=splits_adj if splits_adj else None)
+                         splits_adj=splits_adj if splits_adj else None,
+                         zone_rate=zone_rate,
+                         defense=defense if defense else None)
         results.append(pa)
         if record:
             sample_pas.append(pa)
@@ -1267,3 +1408,54 @@ def run_simulation(pitcher_id: int, batter_id: int,
             "pitcher_adj_model": 'goose3' if using_goose3 else 'pk_phr',
         }
     }
+
+
+def load_batter_overall_rates(batter_id: int, db) -> dict:
+    """
+    Batter's overall plate discipline rates across all pitch types.
+    Used as fallback when pitch-type specific tendency data is missing.
+    """
+    from sqlalchemy import text
+    sql = text("""
+        SELECT
+            -- Overall swing rate (swings / total pitches)
+            AVG(CASE WHEN p.call_code IN ('S','W','T','F','X','D','E')
+                THEN 1.0 ELSE 0.0 END) as swing_rate,
+            -- Whiff rate on swings (whiffs / swings)
+            AVG(CASE WHEN p.call_code IN ('S','W','T','F','X','D','E')
+                THEN CASE WHEN p.call_code IN ('S','W','T') THEN 1.0 ELSE 0.0 END
+                ELSE NULL END) as whiff_rate,
+            -- Chase rate = out-of-zone swings / out-of-zone pitches
+            AVG(CASE WHEN p.zone NOT BETWEEN 1 AND 9
+                THEN CASE WHEN p.call_code IN ('S','W','T','F','X','D','E')
+                    THEN 1.0 ELSE 0.0 END
+                ELSE NULL END) as chase_rate,
+            -- Zone swing rate = in-zone swings / in-zone pitches
+            AVG(CASE WHEN p.zone BETWEEN 1 AND 9
+                THEN CASE WHEN p.call_code IN ('S','W','T','F','X','D','E')
+                    THEN 1.0 ELSE 0.0 END
+                ELSE NULL END) as zone_swing_rate,
+            -- Contact rate = non-whiff swings / swings
+            AVG(CASE WHEN p.call_code IN ('S','W','T','F','X','D','E')
+                THEN CASE WHEN p.call_code NOT IN ('S','W','T') THEN 1.0 ELSE 0.0 END
+                ELSE NULL END) as contact_rate,
+            COUNT(*) as pitches
+        FROM mlb.pitches p
+        JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk
+            AND ab.at_bat_index = p.at_bat_index
+        JOIN mlb.games g ON g.game_pk = p.game_pk
+        WHERE ab.batter_id = :bid
+        AND g.season = 2026 AND g.game_type = 'R'
+        AND p.call_code IN ('B','C','S','W','T','F','X','D','E')
+        HAVING COUNT(*) >= 30
+    """)
+    row = db.execute(sql, {"bid": batter_id}).mappings().first()
+    if row and row['whiff_rate'] is not None:
+        return {
+            'swing_rate': float(row['swing_rate'] or 0.460),
+            'whiff_rate': float(row['whiff_rate'] or 0.267),
+            'chase_rate': float(row['chase_rate'] or 0.310),
+            'zone_swing_rate': float(row['zone_swing_rate'] or 0.670),
+            'contact_rate': float(row['contact_rate'] or 0.78),
+        }
+    return {}

@@ -3,19 +3,19 @@ Goose+ 3 — Unified pitcher quality model.
 
 Architecture:
     Stuff Score (physics + location + tunnel) = Bayesian prior
-    Goose+ 2 (observed outcomes vs league baselines) = likelihood
+    pK+ / pHR+ (observed outcomes vs league baselines) = likelihood
 
-    Goose+ 3 = stuff_weight * Stuff + outcomes_weight * Goose2
+    Goose+ 3 = stuff_weight * Stuff + outcomes_weight * avg(pK+, pHR+)
 
 Blending weights by sample size:
     outcomes_weight = min(1.0, pitches / 300) * 0.65
     stuff_weight = 1.0 - outcomes_weight
 
 At 0 pitches:     100% Stuff Score (pure physics)
-At 150 pitches:   67% Stuff / 33% Goose+2
-At 300 pitches:   54% Stuff / 46% Goose+2
-At 600 pitches:   43% Stuff / 57% Goose+2
-At 1200+ pitches: 35% Stuff / 65% Goose+2 (outcomes eventually dominate)
+At 150 pitches:   67% Stuff / 33% outcomes
+At 300 pitches:   54% Stuff / 46% outcomes
+At 600 pitches:   43% Stuff / 57% outcomes
+At 1200+ pitches: 35% Stuff / 65% outcomes (outcomes eventually dominate)
 
 All scores indexed to 100 = league average.
 Regression to mean applied at final composite level.
@@ -62,37 +62,55 @@ def build_goose3(score_season: int, db):
         }
     print(f"  Loaded {len(stuff_map)} Stuff Score entries")
 
-    g2_sql = text("""
+    pk_sql = text("""
         SELECT pitcher_id, pitcher_name, pitch_type_code, bat_side,
-               pitch_hand, goose2_plus, pitches
-        FROM mlb.goose2_scores
+               pitch_hand, pk_plus, pitches
+        FROM mlb.pk_scores
         WHERE season = :season AND pitches >= 10
     """)
-    g2_rows = db.execute(g2_sql, {"season": score_season}).mappings().all()
-    g2_map = {}
-    for r in g2_rows:
+    pk_rows = db.execute(pk_sql, {"season": score_season}).mappings().all()
+    pk_map = {}
+    for r in pk_rows:
         key = (int(r['pitcher_id']), r['pitch_type_code'], r['bat_side'])
-        g2_map[key] = {
-            'goose2_plus': float(r['goose2_plus'] or 100),
+        pk_map[key] = {
+            'pk_plus':      float(r['pk_plus'] or 100),
             'pitcher_name': r['pitcher_name'],
-            'pitch_hand': r['pitch_hand'],
-            'pitches': int(r['pitches']),
+            'pitch_hand':   r['pitch_hand'],
+            'pitches':      int(r['pitches']),
         }
-    print(f"  Loaded {len(g2_map)} Goose+2 entries")
+    print(f"  Loaded {len(pk_map)} pK+ entries")
 
-    all_keys = set(g2_map.keys())
+    phr_sql = text("""
+        SELECT pitcher_id, pitcher_name, pitch_type_code, bat_side,
+               pitch_hand, phr_plus, pitches
+        FROM mlb.phr_scores
+        WHERE season = :season AND pitches >= 10
+    """)
+    phr_rows = db.execute(phr_sql, {"season": score_season}).mappings().all()
+    phr_map = {}
+    for r in phr_rows:
+        key = (int(r['pitcher_id']), r['pitch_type_code'], r['bat_side'])
+        phr_map[key] = {
+            'phr_plus':     float(r['phr_plus'] or 100),
+            'pitcher_name': r['pitcher_name'],
+            'pitch_hand':   r['pitch_hand'],
+            'pitches':      int(r['pitches']),
+        }
+    print(f"  Loaded {len(phr_map)} pHR+ entries")
+
+    all_keys = set(pk_map.keys()) | set(phr_map.keys())
 
     upsert_sql = text("""
         INSERT INTO mlb.goose3_scores (
             pitcher_id, pitcher_name, season, pitch_type_code,
             pitch_hand, bat_side,
-            stuff_score, goose2_score,
+            stuff_score, goose2_score, pk_score, phr_score,
             stuff_weight, outcomes_weight,
             goose3_plus, stuff_outcomes_gap, pitches
         ) VALUES (
             :pitcher_id, :pitcher_name, :season, :pitch_type_code,
             :pitch_hand, :bat_side,
-            :stuff_score, :goose2_score,
+            :stuff_score, :goose2_score, :pk_score, :phr_score,
             :stuff_weight, :outcomes_weight,
             :goose3_plus, :stuff_outcomes_gap, :pitches
         )
@@ -100,6 +118,8 @@ def build_goose3(score_season: int, db):
         DO UPDATE SET
             stuff_score = EXCLUDED.stuff_score,
             goose2_score = EXCLUDED.goose2_score,
+            pk_score = EXCLUDED.pk_score,
+            phr_score = EXCLUDED.phr_score,
             stuff_weight = EXCLUDED.stuff_weight,
             outcomes_weight = EXCLUDED.outcomes_weight,
             goose3_plus = EXCLUDED.goose3_plus,
@@ -112,48 +132,55 @@ def build_goose3(score_season: int, db):
     stored = 0
 
     for (pid, pt, bat_side) in all_keys:
-        g2 = g2_map[(pid, pt, bat_side)]
-        stuff = stuff_map.get((pid, pt))
+        pk_data  = pk_map.get((pid, pt, bat_side), {})
+        phr_data = phr_map.get((pid, pt, bat_side), {})
+        stuff    = stuff_map.get((pid, pt))
 
-        pitches = g2['pitches']
-        goose2_score = g2['goose2_plus']
+        anchor      = pk_data if pk_data else phr_data
+        pitches     = int(anchor.get('pitches', 0))
+        pk_score    = float(pk_data.get('pk_plus', 100))
+        phr_score   = float(phr_data.get('phr_plus', 100))
         stuff_score = stuff['stuff_score'] if stuff else 100.0
 
+        outcome_score = (pk_score + phr_score) / 2.0
         outcomes_w = get_outcomes_weight(pitches)
         stuff_w = 1.0 - outcomes_w
 
-        goose3_raw = (stuff_score * stuff_w) + (goose2_score * outcomes_w)
+        goose3_raw = (stuff_score * stuff_w) + (outcome_score * outcomes_w)
         goose3 = regress_to_mean(goose3_raw, pitches)
-        gap = round(goose2_score - stuff_score, 1)
+        gap = round(outcome_score - stuff_score, 1)
 
         db.execute(upsert_sql, {
-            "pitcher_id": pid,
-            "pitcher_name": g2['pitcher_name'],
-            "season": score_season,
-            "pitch_type_code": pt,
-            "pitch_hand": g2['pitch_hand'],
-            "bat_side": bat_side,
-            "stuff_score": round(stuff_score, 1),
-            "goose2_score": round(goose2_score, 1),
-            "stuff_weight": stuff_w,
-            "outcomes_weight": outcomes_w,
-            "goose3_plus": goose3,
+            "pitcher_id":       pid,
+            "pitcher_name":     anchor['pitcher_name'],
+            "season":           score_season,
+            "pitch_type_code":  pt,
+            "pitch_hand":       anchor['pitch_hand'],
+            "bat_side":         bat_side,
+            "stuff_score":      round(stuff_score, 1),
+            "pk_score":         round(pk_score, 1),
+            "phr_score":        round(phr_score, 1),
+            "goose2_score":     round(outcome_score, 1),  # backward compat
+            "stuff_weight":     stuff_w,
+            "outcomes_weight":  outcomes_w,
+            "goose3_plus":      goose3,
             "stuff_outcomes_gap": gap,
-            "pitches": pitches,
+            "pitches":          pitches,
         })
         stored += 1
 
-        key = pid
-        if key not in pitcher_totals:
-            pitcher_totals[key] = {
-                'name': g2['pitcher_name'],
-                'pitch_hand': g2['pitch_hand'],
+        if pid not in pitcher_totals:
+            pitcher_totals[pid] = {
+                'name': anchor['pitcher_name'],
+                'pitch_hand': anchor['pitch_hand'],
                 'scores': []
             }
-        pitcher_totals[key]['scores'].append({
-            'goose3': goose3,
-            'stuff': stuff_score,
-            'goose2': goose2_score,
+        pitcher_totals[pid]['scores'].append({
+            'goose3':  goose3,
+            'stuff':   stuff_score,
+            'pk':      pk_score,
+            'phr':     phr_score,
+            'outcome': outcome_score,
             'pitches': pitches,
             'bat_side': bat_side,
         })
@@ -193,9 +220,9 @@ def build_goose3(score_season: int, db):
         def weighted_avg(key):
             return sum(s[key] * s['pitches'] for s in scores) / total_p
 
-        overall = weighted_avg('goose3')
-        avg_stuff = weighted_avg('stuff')
-        avg_goose2 = weighted_avg('goose2')
+        overall    = weighted_avg('goose3')
+        avg_stuff  = weighted_avg('stuff')
+        avg_goose2 = weighted_avg('outcome')  # (pk+phr)/2 for backward compat
         gap = round(avg_goose2 - avg_stuff, 1)
 
         lhh = [s for s in scores if s['bat_side'] == 'L']
@@ -237,7 +264,8 @@ def validate_goose3(season: int, db):
             g3.stuff_outcomes_gap,
             g3.total_pitches,
             ROUND(go1.goose_plus::numeric,1) as goose1_plus,
-            ROUND(go2.goose2_plus::numeric,1) as goose2_plus,
+            ROUND(pk.pk_plus::numeric,1)     as pk_plus,
+            ROUND(phr.phr_plus::numeric,1)   as phr_plus,
             ROUND(so.stuff_score::numeric,1) as stuff_score,
             ROUND(SUM(bp.strikeouts)::numeric /
                 NULLIF(SUM(bp.batters_faced),0)*100,2) as k_rate,
@@ -247,8 +275,10 @@ def validate_goose3(season: int, db):
         FROM mlb.goose3_overall g3
         LEFT JOIN mlb.goose_overall go1 ON go1.pitcher_id = g3.pitcher_id
             AND go1.season = g3.season AND go1.game_pk IS NULL
-        LEFT JOIN mlb.goose2_overall go2 ON go2.pitcher_id = g3.pitcher_id
-            AND go2.season = g3.season
+        LEFT JOIN mlb.pk_overall pk ON pk.pitcher_id = g3.pitcher_id
+            AND pk.season = g3.season
+        LEFT JOIN mlb.phr_overall phr ON phr.pitcher_id = g3.pitcher_id
+            AND phr.season = g3.season
         LEFT JOIN mlb.stuff_overall so ON so.pitcher_id = g3.pitcher_id
             AND so.season = g3.season
         LEFT JOIN mlb.boxscore_pitching bp ON bp.player_id = g3.pitcher_id
@@ -263,7 +293,7 @@ def validate_goose3(season: int, db):
         GROUP BY g3.pitcher_id, g3.pitcher_name, g3.goose3_plus,
                  g3.avg_stuff_score, g3.avg_goose2_score,
                  g3.stuff_outcomes_gap, g3.total_pitches,
-                 go1.goose_plus, go2.goose2_plus, so.stuff_score, br.era_plus
+                 go1.goose_plus, pk.pk_plus, phr.phr_plus, so.stuff_score, br.era_plus
         HAVING SUM(bp.batters_faced) >= 50
         ORDER BY g3.goose3_plus DESC
     """)
@@ -278,7 +308,8 @@ def validate_goose3(season: int, db):
     models = {
         'Goose+ 3':    'goose3_plus',
         'Goose+ 1':    'goose1_plus',
-        'Goose+ 2':    'goose2_plus',
+        'pK+':         'pk_plus',
+        'pHR+':        'phr_plus',
         'Stuff Score': 'stuff_score',
     }
     outcomes = {
@@ -325,15 +356,18 @@ def validate_goose3(season: int, db):
 
     print(f"\n  Top 15 Goose+ 3:")
     print(f"  {'Pitcher':<25} {'G3+':>6} {'Stuff':>6} "
-          f"{'G2+':>6} {'G1+':>6} {'Gap':>6} {'K%':>6}")
-    print(f"  {'-'*65}")
+          f"{'pK+':>6} {'pHR+':>6} {'G1+':>6} {'Gap':>6} {'K%':>6}")
+    print(f"  {'-'*72}")
     for _, r in df.nlargest(15, 'goose3_plus').iterrows():
         g1 = f"{r['goose1_plus']:.1f}" if pd.notna(r.get('goose1_plus')) else '—'
-        k = f"{r['k_rate']:.1f}" if pd.notna(r.get('k_rate')) else '—'
+        k  = f"{r['k_rate']:.1f}"      if pd.notna(r.get('k_rate'))      else '—'
+        pk  = f"{r['pk_plus']:.1f}"   if pd.notna(r.get('pk_plus'))    else '—'
+        phr = f"{r['phr_plus']:.1f}"  if pd.notna(r.get('phr_plus'))   else '—'
         print(f"  {r['pitcher_name']:<25} "
               f"{r['goose3_plus']:>6.1f} "
               f"{r['avg_stuff_score']:>6.1f} "
-              f"{r['avg_goose2_score']:>6.1f} "
+              f"{pk:>6} "
+              f"{phr:>6} "
               f"{g1:>6} "
               f"{r['stuff_outcomes_gap']:>+6.1f} "
               f"{k:>6}")

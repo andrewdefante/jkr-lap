@@ -25,8 +25,10 @@ from mlb.simulate import (
     load_league_count_mix,
     load_pitcher_overall_mix,
     load_batter_tends,
-    load_goose3_adjustments,
+    load_pk_phr_adjustments,
+    load_pitcher_zone_rate,
     load_juiced2_batter_adjustments,
+    load_team_defense,
     simulate_pa,
     aggregate_outcomes,
     LEAGUE_WHIFF,
@@ -35,9 +37,9 @@ from mlb.simulate import (
 )
 
 N_SIMS_PER_BATTER = 500
+K_PCT_CALIBRATION = 0.830  # fallback when no calibration row exists in DB
 TOP_N_BATTERS = 8
 MIN_PA = 20
-PA_PER_INN = 3.5
 
 TEAM_ABBREVS = {
     108: 'LAA', 109: 'AZ', 110: 'BAL', 111: 'BOS', 112: 'CHC',
@@ -48,7 +50,7 @@ TEAM_ABBREVS = {
     144: 'ATL', 145: 'CWS', 146: 'MIA', 147: 'NYY', 158: 'MIL',
 }
 
-def get_schedule(target_date: str) -> list:
+def get_schedule(target_date: str, include_final: bool = False) -> list:
     """Fetch today's schedule with probable pitchers and lineups."""
     r = httpx.get('https://statsapi.mlb.com/api/v1/schedule', params={
         'sportId': 1,
@@ -63,7 +65,7 @@ def get_schedule(target_date: str) -> list:
     for date_entry in d.get('dates', []):
         for game in date_entry.get('games', []):
             status = game.get('status', {}).get('detailedState', '')
-            if status in ('Final', 'Game Over'):
+            if not include_final and status in ('Final', 'Game Over'):
                 continue
 
             away = game.get('teams', {}).get('away', {})
@@ -160,7 +162,7 @@ def get_top_batters(batter_ids: list, pitcher_hand: str, db) -> list:
 
 
 def get_pitcher_avg_ip(pitcher_id: int, db) -> float:
-    """Pitcher's avg IP per start in 2026. Defaults to 6.0 if insufficient data."""
+    """Pitcher's avg IP per start in 2026. Defaults to 5.0 if insufficient data."""
     result = db.execute(text("""
         SELECT AVG(bp.innings_pitched)
         FROM mlb.boxscore_pitching bp
@@ -171,13 +173,65 @@ def get_pitcher_avg_ip(pitcher_id: int, db) -> float:
     """), {"pid": pitcher_id}).scalar()
     if result and float(result) >= 1.0:
         return min(float(result), 9.0)
-    return 6.0
+    return 5.0  # league avg starter ~5.1 inn
 
 
-def get_lineup_k_factor(batter_ids: list, db) -> float:
-    """Lineup K% vs league avg (25.1%), dampened 50%, clamped [0.80, 1.25]."""
+def get_pitcher_season_k_pct(pitcher_id: int, db) -> tuple:
+    """
+    Returns (season_k_pct, batters_faced) for blending with sim K%.
+    Uses 2026 at_bats data for the most accurate current-season rate.
+    Returns (None, 0) if fewer than 30 BF.
+    """
+    result = db.execute(text("""
+        SELECT
+            AVG(CASE WHEN ab.event IN ('Strikeout', 'Strikeout - DP')
+                THEN 1.0 ELSE 0.0 END) as k_pct,
+            COUNT(*) as bf
+        FROM mlb.at_bats ab
+        JOIN mlb.games g ON g.game_pk = ab.game_pk
+        WHERE ab.pitcher_id = :pid
+        AND g.season = 2026 AND g.game_type = 'R'
+        AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+            'Caught Stealing 3B','Wild Pitch','Passed Ball')
+        HAVING COUNT(*) >= 30
+    """), {"pid": pitcher_id}).mappings().first()
+    if result:
+        return float(result['k_pct']), int(result['bf'])
+    return None, 0
+
+
+def get_pitcher_pa_per_inn(pitcher_id: int, db) -> float:
+    """
+    Pitcher's actual PA faced per inning in 2026.
+    Reflects walk/hit tendency — pitchers who allow more baserunners
+    face more batters per inning.
+    Defaults to 4.1 (MLB average) if insufficient data.
+    """
+    result = db.execute(text("""
+        SELECT
+            COUNT(ab.at_bat_index)::float /
+            NULLIF(SUM(bp.innings_pitched::float), 0)
+        FROM mlb.boxscore_pitching bp
+        JOIN mlb.games g ON g.game_pk = bp.game_pk
+        JOIN mlb.at_bats ab ON ab.game_pk = bp.game_pk
+            AND ab.pitcher_id = bp.player_id
+        WHERE bp.player_id = :pid
+        AND g.season = 2026 AND g.game_type = 'R'
+        AND bp.games_started = 1
+        AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+            'Caught Stealing 3B','Wild Pitch','Passed Ball')
+    """), {"pid": pitcher_id}).scalar()
+    if result and 2.5 <= float(result) <= 6.0:
+        return round(float(result), 2)
+    return 4.1  # MLB average PA per inning
+
+
+def get_lineup_k_factor(batter_ids: list, db) -> tuple:
+    """Lineup K% vs league avg (25.1%), dampened 50%, clamped [0.80, 1.25].
+    Returns (k_factor, raw_lineup_k_rate) tuple.
+    """
     if not batter_ids:
-        return 1.0
+        return 1.0, 0.224
     result = db.execute(text("""
         SELECT SUM(bb.strikeouts)::float / NULLIF(SUM(bb.at_bats), 0)
         FROM mlb.boxscore_batting bb
@@ -187,12 +241,35 @@ def get_lineup_k_factor(batter_ids: list, db) -> float:
         HAVING SUM(bb.at_bats) >= 50
     """), {"bids": batter_ids}).scalar()
     if not result:
-        return 1.0
+        return 1.0, 0.224
     LEAGUE_K_PCT = 0.251
-    raw_ratio = float(result) / LEAGUE_K_PCT
+    raw_k = float(result)
+    raw_ratio = raw_k / LEAGUE_K_PCT
     clamped = max(0.80, min(1.25, raw_ratio))
     dampened = 1.0 + (clamped - 1.0) * 0.5
-    return round(dampened, 3)
+    return round(dampened, 3), round(raw_k, 3)
+
+
+def load_calibration_factors(db) -> dict:
+    """
+    Load the most recent calibration factors from mlb.projection_calibration.
+    Falls back to hardcoded defaults if the table is empty or missing.
+    """
+    try:
+        row = db.execute(text("""
+            SELECT k_pct_calibration, hr_rate_multiplier
+            FROM mlb.projection_calibration
+            ORDER BY computed_at DESC
+            LIMIT 1
+        """)).mappings().first()
+        if row:
+            return {
+                "k_pct_calibration": float(row["k_pct_calibration"]),
+                "hr_rate_multiplier": float(row["hr_rate_multiplier"]),
+            }
+    except Exception:
+        pass
+    return {"k_pct_calibration": K_PCT_CALIBRATION, "hr_rate_multiplier": 1.0}
 
 
 def get_acwr_ip_factor(pitcher_id: int, db) -> float:
@@ -217,9 +294,14 @@ def get_acwr_ip_factor(pitcher_id: int, db) -> float:
         return 1.0
 
 
-def simulate_pitcher_vs_batters(pitcher_id: int, batters: list, db) -> dict:
+def simulate_pitcher_vs_batters(pitcher_id: int, batters: list, db,
+                                k_calibration: float = K_PCT_CALIBRATION,
+                                hr_multiplier: float = 1.0,
+                                opp_team_id: int = None) -> dict:
     """Run N_SIMS_PER_BATTER simulations for each batter using combined Goose+1/2 + Stuff Score."""
     lg_mix = load_league_count_mix(db)
+    zone_rate = load_pitcher_zone_rate(pitcher_id, db)
+    defense = load_team_defense(opp_team_id, db) if opp_team_id else {}
     all_results = []
 
     for batter in batters:
@@ -233,7 +315,7 @@ def simulate_pitcher_vs_batters(pitcher_id: int, batters: list, db) -> dict:
         count_mix = load_pitcher_count_mix(pitcher_id, bat_side, db)
         fallback_mix = load_pitcher_overall_mix(pitcher_id, bat_side, db)
         batter_tends = load_batter_tends(batter_id, db)
-        pitcher_adj = load_goose3_adjustments(pitcher_id, bat_side, db)
+        pitcher_adj = load_pk_phr_adjustments(pitcher_id, bat_side, db)
         juiced2_adj = load_juiced2_batter_adjustments(batter_id, db)
 
         if not fallback_mix and not count_mix:
@@ -243,7 +325,9 @@ def simulate_pitcher_vs_batters(pitcher_id: int, batters: list, db) -> dict:
             pa = simulate_pa(count_mix, lg_mix, fallback_mix, batter_tends,
                              record_pitches=False,
                              goose2_adj=pitcher_adj if pitcher_adj else None,
-                             juiced2_adj=juiced2_adj if juiced2_adj else None)
+                             juiced2_adj=juiced2_adj if juiced2_adj else None,
+                             zone_rate=zone_rate,
+                             defense=defense if defense else None)
             all_results.append(pa)
 
     if not all_results:
@@ -252,20 +336,24 @@ def simulate_pitcher_vs_batters(pitcher_id: int, batters: list, db) -> dict:
     summary = aggregate_outcomes(all_results, len(all_results))
 
     return {
-        "proj_k_pct": summary["k_pct"],
-        "proj_hr_pct": summary["hr_pct"],
+        "proj_k_pct": round(summary["k_pct"] * k_calibration, 2),
+        "proj_hr_pct": round(summary["hr_pct"] * hr_multiplier, 2),
         "proj_hit_pct": summary["hit_pct"],
         "proj_ops": summary["ops"],
         "proj_bb_pct": summary["bb_pct"],
-        "proj_ks_6inn": round(summary["k_pct"] / 100 * 21, 1),
         "total_sims": len(all_results),
     }
 
 
-def build_daily_projections(target_date: str, db):
+def build_daily_projections(target_date: str, db, include_final: bool = False):
     print(f"\n=== Building Daily Projections — {target_date} ===")
 
-    games = get_schedule(target_date)
+    calib = load_calibration_factors(db)
+    k_calib  = calib["k_pct_calibration"]
+    hr_mult  = calib["hr_rate_multiplier"]
+    print(f"  Calibration: k_pct={k_calib:.4f} hr_mult={hr_mult:.4f}")
+
+    games = get_schedule(target_date, include_final=include_final)
     print(f"  Found {len(games)} games")
 
     stored = 0
@@ -288,7 +376,8 @@ def build_daily_projections(target_date: str, db):
             pitcher_hand = get_pitcher_hand(pitcher_id, db)
 
             posted_lineup = game[f'{opp_side}_lineup']
-            if posted_lineup and len(posted_lineup) >= 7:
+            used_posted_lineup = bool(posted_lineup and len(posted_lineup) >= 7)
+            if used_posted_lineup:
                 batter_ids = posted_lineup
                 print(f"    Using posted lineup ({len(batter_ids)} players)")
             else:
@@ -306,16 +395,48 @@ def build_daily_projections(target_date: str, db):
 
             print(f"    Simulating vs {len(batters)} batters...")
 
-            proj = simulate_pitcher_vs_batters(pitcher_id, batters, db)
+            proj = simulate_pitcher_vs_batters(pitcher_id, batters, db,
+                                               k_calibration=k_calib,
+                                               hr_multiplier=hr_mult,
+                                               opp_team_id=opp_team_id)
             if not proj:
                 continue
 
             avg_ip = get_pitcher_avg_ip(pitcher_id, db)
-            lineup_k = get_lineup_k_factor(batter_ids, db)
+            lineup_k, lineup_raw_k = get_lineup_k_factor(batter_ids, db)
             acwr_factor = get_acwr_ip_factor(pitcher_id, db)
             proj_ip = round(avg_ip * acwr_factor, 2)
-            proj["proj_ks_6inn"] = round(proj["proj_k_pct"] / 100 * proj_ip * PA_PER_INN * lineup_k, 1)
-            print(f"    IP={proj_ip} (avg={avg_ip:.1f} acwr={acwr_factor:.2f}) lineup_k={lineup_k:.3f} → proj_ks={proj['proj_ks_6inn']}")
+            pa_per_inn = get_pitcher_pa_per_inn(pitcher_id, db)
+
+            # Per-lineup K% calibration: scale by how much this lineup Ks
+            # relative to league avg (0.224), clamped to avoid extremes
+            lineup_k_calib = k_calib * max(0.60, min(1.30, lineup_raw_k / 0.224))
+            proj["proj_k_pct"] = round(proj["proj_k_pct"] / k_calib * lineup_k_calib, 2)
+
+            # Blend simulated K% with actual 2026 season K%.
+            # Sim converges toward mean and under-differentiates elite K pitchers.
+            # Blend weight grows with sample size, caps at 0.60 at 300+ BF.
+            season_k_pct, bf = get_pitcher_season_k_pct(pitcher_id, db)
+            if season_k_pct is not None:
+                blend_weight = min(0.60, bf / 300)
+                sim_k_pct = proj["proj_k_pct"]
+                blended_k = (1 - blend_weight) * (sim_k_pct / 100) + blend_weight * season_k_pct
+                proj["proj_k_pct"] = round(blended_k * 100, 2)
+                print(f"    K% blend: sim={sim_k_pct:.1f}% actual={season_k_pct*100:.1f}% "
+                      f"bf={bf} w={blend_weight:.2f} → {proj['proj_k_pct']:.1f}%")
+
+            proj["proj_ks_6inn"] = round(proj["proj_k_pct"] / 100 * proj_ip * pa_per_inn * lineup_k, 1)
+
+            # F5 projections — cap at 5 innings regardless of pitcher avg IP
+            f5_ip = min(proj_ip, 5.0)
+            proj["proj_ip_f5"] = round(f5_ip, 1)
+            proj["proj_ks_f5"] = round(proj["proj_k_pct"] / 100 * f5_ip * pa_per_inn * lineup_k, 1)
+            # ER F5: use proj_ops as proxy for run scoring (higher OPS allowed = more ER)
+            # League avg ER/9 ~4.5, scale by pitcher quality
+            lg_er_per_inn = 0.50  # ~4.5 ER/9
+            ops_factor = (proj.get("proj_ops", 0.700) / 0.700)  # scale vs league avg OPS
+            proj["proj_er_f5"] = round(lg_er_per_inn * f5_ip * ops_factor, 1)
+            print(f"    IP={proj_ip} pa/inn={pa_per_inn:.2f} lineup_k={lineup_k:.3f} raw_k={lineup_raw_k:.3f} calib={lineup_k_calib:.3f} → proj_ks={proj['proj_ks_6inn']}")
 
             goose = db.execute(text("""
                 SELECT goose_plus FROM mlb.goose_overall
@@ -332,31 +453,43 @@ def build_daily_projections(target_date: str, db):
                 INSERT INTO mlb.daily_projections (
                     snapshot_date, game_pk, pitcher_id, pitcher_name,
                     pitcher_hand, team_abbrev, opp_abbrev, opp_team_id,
+                    home_team_abbrev,
                     goose_plus, bapv_plus,
                     proj_k_pct, proj_hr_pct, proj_hit_pct, proj_ops,
-                    proj_ks_6inn, proj_bb_pct,
-                    batters_simulated, simulations_per_batter, batter_ids
+                    proj_ks_6inn, proj_bb_pct, proj_ks_f5, proj_er_f5, proj_ip_f5,
+                    batters_simulated, simulations_per_batter, batter_ids,
+                    proj_ks_locked, proj_ks_f5_locked, proj_k_pct_locked, locked_at
                 ) VALUES (
                     :snap_date, :game_pk, :pitcher_id, :pitcher_name,
                     :pitcher_hand, :team_abbrev, :opp_abbrev, :opp_team_id,
+                    :home_team_abbrev,
                     :goose_plus, :bapv_plus,
                     :proj_k_pct, :proj_hr_pct, :proj_hit_pct, :proj_ops,
-                    :proj_ks_6inn, :proj_bb_pct,
-                    :batters_sim, :sims_per, :batter_ids
+                    :proj_ks_6inn, :proj_bb_pct, :proj_ks_f5, :proj_er_f5, :proj_ip_f5,
+                    :batters_sim, :sims_per, :batter_ids,
+                    :proj_ks_locked, :proj_ks_f5_locked, :proj_k_pct_locked, NOW()
                 )
                 ON CONFLICT (snapshot_date, pitcher_id) DO UPDATE SET
                     team_abbrev = EXCLUDED.team_abbrev,
                     opp_abbrev = EXCLUDED.opp_abbrev,
                     opp_team_id = EXCLUDED.opp_team_id,
+                    home_team_abbrev = EXCLUDED.home_team_abbrev,
                     proj_k_pct = EXCLUDED.proj_k_pct,
                     proj_hr_pct = EXCLUDED.proj_hr_pct,
                     proj_hit_pct = EXCLUDED.proj_hit_pct,
                     proj_ops = EXCLUDED.proj_ops,
                     proj_ks_6inn = EXCLUDED.proj_ks_6inn,
                     proj_bb_pct = EXCLUDED.proj_bb_pct,
+                    proj_ks_f5 = EXCLUDED.proj_ks_f5,
+                    proj_er_f5 = EXCLUDED.proj_er_f5,
+                    proj_ip_f5 = EXCLUDED.proj_ip_f5,
                     batters_simulated = EXCLUDED.batters_simulated,
                     goose_plus = EXCLUDED.goose_plus,
                     bapv_plus = EXCLUDED.bapv_plus,
+                    proj_ks_locked = COALESCE(mlb.daily_projections.proj_ks_locked, EXCLUDED.proj_ks_locked),
+                    proj_ks_f5_locked = COALESCE(mlb.daily_projections.proj_ks_f5_locked, EXCLUDED.proj_ks_f5_locked),
+                    proj_k_pct_locked = COALESCE(mlb.daily_projections.proj_k_pct_locked, EXCLUDED.proj_k_pct_locked),
+                    locked_at = COALESCE(mlb.daily_projections.locked_at, EXCLUDED.locked_at),
                     created_at = NOW()
             """), {
                 "snap_date": target_date,
@@ -367,6 +500,7 @@ def build_daily_projections(target_date: str, db):
                 "team_abbrev": team_abbrev,
                 "opp_abbrev": opp_abbrev,
                 "opp_team_id": opp_team_id,
+                "home_team_abbrev": game['home_abbrev'],
                 "goose_plus": float(goose) if goose else None,
                 "bapv_plus": float(bapv) if bapv else None,
                 "proj_k_pct": proj["proj_k_pct"],
@@ -374,7 +508,13 @@ def build_daily_projections(target_date: str, db):
                 "proj_hit_pct": proj["proj_hit_pct"],
                 "proj_ops": proj["proj_ops"],
                 "proj_ks_6inn": proj["proj_ks_6inn"],
+                "proj_ks_locked": proj.get("proj_ks_6inn") if used_posted_lineup else None,
+                "proj_ks_f5_locked": proj.get("proj_ks_f5") if used_posted_lineup else None,
+                "proj_k_pct_locked": proj.get("proj_k_pct") if used_posted_lineup else None,
                 "proj_bb_pct": proj["proj_bb_pct"],
+                "proj_ks_f5": proj.get("proj_ks_f5", proj["proj_ks_6inn"]),
+                "proj_er_f5": proj.get("proj_er_f5", 2.0),
+                "proj_ip_f5": proj.get("proj_ip_f5", 5.0),
                 "batters_sim": len(batters),
                 "sims_per": N_SIMS_PER_BATTER,
                 "batter_ids": json_lib.dumps([b['batter_id'] for b in batters]),
@@ -604,11 +744,13 @@ if __name__ == "__main__":
     parser.add_argument("--date", type=str, default=str(date.today()))
     parser.add_argument("--pitchers-only", action="store_true")
     parser.add_argument("--batters-only", action="store_true")
+    parser.add_argument("--include-final", action="store_true",
+                        help="Include already-final games (for retroactive projections)")
     args = parser.parse_args()
     db = SessionLocal()
     try:
         if not args.batters_only:
-            build_daily_projections(args.date, db)
+            build_daily_projections(args.date, db, include_final=args.include_final)
         if not args.pitchers_only:
             build_daily_batter_projections(args.date, db)
     finally:

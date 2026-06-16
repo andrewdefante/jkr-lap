@@ -84,13 +84,45 @@ def upsert_game_projections(game_date: date, db) -> int:
         FROM mlb.games g
         JOIN mlb.daily_projections dp_away
             ON dp_away.game_pk    = g.game_pk
-           AND dp_away.team_abbrev = g.away_team_abbrev
+           AND dp_away.opp_team_id = g.home_team_id
+           AND dp_away.snapshot_date = :d
         JOIN mlb.daily_projections dp_home
             ON dp_home.game_pk    = g.game_pk
-           AND dp_home.team_abbrev = g.home_team_abbrev
+           AND dp_home.opp_team_id = g.away_team_id
+           AND dp_home.snapshot_date = :d
         WHERE g.game_date::date = :d
           AND g.game_type = 'R'
     """), {"d": game_date}).mappings().all()
+
+    # Fall back to game_lineups for dates not yet in mlb.games (today's pre-game slate)
+    if not rows:
+        rows = db.execute(text("""
+            SELECT
+                gl.game_pk,
+                gl.game_date,
+                EXTRACT(YEAR FROM gl.game_date)::integer AS season,
+                dp_away.team_abbrev AS away_team_abbrev,
+                dp_home.team_abbrev AS home_team_abbrev,
+                NULL::integer AS away_score,
+                NULL::integer AS home_score,
+                gl.away_pitcher_id,
+                gl.away_pitcher_name,
+                dp_away.proj_ops AS away_proj_ops,
+                gl.home_pitcher_id,
+                gl.home_pitcher_name,
+                dp_home.proj_ops AS home_proj_ops,
+                dp_away.snapshot_date
+            FROM mlb.game_lineups gl
+            JOIN mlb.daily_projections dp_away
+                ON dp_away.game_pk    = gl.game_pk
+               AND dp_away.pitcher_id = gl.away_pitcher_id
+               AND dp_away.snapshot_date = :d
+            JOIN mlb.daily_projections dp_home
+                ON dp_home.game_pk    = gl.game_pk
+               AND dp_home.pitcher_id = gl.home_pitcher_id
+               AND dp_home.snapshot_date = :d
+            WHERE gl.game_date = :d
+        """), {"d": game_date}).mappings().all()
 
     if not rows:
         return 0
@@ -343,9 +375,9 @@ if __name__ == "__main__":
                 SELECT DISTINCT g.game_date::date AS d
                 FROM mlb.games g
                 JOIN mlb.daily_projections dp_away
-                    ON dp_away.game_pk = g.game_pk AND dp_away.team_abbrev = g.away_team_abbrev
+                    ON dp_away.game_pk = g.game_pk AND dp_away.opp_team_id = g.home_team_id
                 JOIN mlb.daily_projections dp_home
-                    ON dp_home.game_pk = g.game_pk AND dp_home.team_abbrev = g.home_team_abbrev
+                    ON dp_home.game_pk = g.game_pk AND dp_home.opp_team_id = g.away_team_id
                 WHERE g.game_type = 'R'
                 ORDER BY d
             """)).scalars().all()

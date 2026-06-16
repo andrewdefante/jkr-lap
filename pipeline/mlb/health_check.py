@@ -98,6 +98,7 @@ def run_health_checks(date_str: str, db) -> bool:
         AND g.game_type = 'R'
     """), {"season": season}).mappings().first()
 
+    diff = 0
     if fg_totals and fg_totals["total_pa"] and gumbo_totals["total_pa"]:
         fg_pa = int(fg_totals["total_pa"])
         gumbo_pa = int(gumbo_totals["total_pa"])

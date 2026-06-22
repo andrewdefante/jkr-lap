@@ -30,3 +30,4 @@ postgres_data/
 # Pipeline cache
 pipeline/**/.cache/
 *.parquet
+api/static/homepage.html

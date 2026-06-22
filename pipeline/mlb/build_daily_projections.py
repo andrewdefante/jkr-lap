@@ -203,35 +203,69 @@ def get_pitcher_season_k_pct(pitcher_id: int, db) -> tuple:
 def get_pitcher_pa_per_inn(pitcher_id: int, db) -> float:
     """
     Pitcher's actual PA faced per inning in 2026.
-    Reflects walk/hit tendency — pitchers who allow more baserunners
-    face more batters per inning.
+    Uses per-game subquery to avoid cartesian product.
+    Converts baseball IP notation to decimal (4.1 -> 4.333, 4.2 -> 4.667).
     Defaults to 4.1 (MLB average) if insufficient data.
     """
     result = db.execute(text("""
-        SELECT
-            COUNT(ab.at_bat_index)::float /
-            NULLIF(SUM(bp.innings_pitched::float), 0)
-        FROM mlb.boxscore_pitching bp
-        JOIN mlb.games g ON g.game_pk = bp.game_pk
-        JOIN mlb.at_bats ab ON ab.game_pk = bp.game_pk
-            AND ab.pitcher_id = bp.player_id
-        WHERE bp.player_id = :pid
-        AND g.season = 2026 AND g.game_type = 'R'
-        AND bp.games_started = 1
-        AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
-            'Caught Stealing 3B','Wild Pitch','Passed Ball')
+        SELECT SUM(pa_count)::float / NULLIF(SUM(ip_decimal), 0)
+        FROM (
+            SELECT
+                bp.game_pk,
+                FLOOR(bp.innings_pitched) +
+                    (bp.innings_pitched - FLOOR(bp.innings_pitched)) * 10.0 / 3.0 as ip_decimal,
+                COUNT(ab.at_bat_index) as pa_count
+            FROM mlb.boxscore_pitching bp
+            JOIN mlb.games g ON g.game_pk = bp.game_pk
+            JOIN mlb.at_bats ab ON ab.game_pk = bp.game_pk
+                AND ab.pitcher_id = bp.player_id
+                AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+                    'Caught Stealing 3B','Wild Pitch','Passed Ball')
+            WHERE bp.player_id = :pid
+            AND g.season = 2026 AND g.game_type = 'R'
+            AND bp.games_started = 1
+            GROUP BY bp.game_pk, bp.innings_pitched
+        ) per_game
+        HAVING SUM(ip_decimal) >= 10
     """), {"pid": pitcher_id}).scalar()
     if result and 2.5 <= float(result) <= 6.0:
         return round(float(result), 2)
     return 4.1  # MLB average PA per inning
 
 
-def get_lineup_k_factor(batter_ids: list, db) -> tuple:
-    """Lineup K% vs league avg (25.1%), dampened 50%, clamped [0.80, 1.25].
+def get_team_k_rate(team_id: int, db) -> float:
+    """Team season K rate used as lineup fallback when no lineup is posted."""
+    result = db.execute(text("""
+        SELECT AVG(CASE WHEN ab.event IN ('Strikeout','Strikeout - DP')
+            THEN 1.0 ELSE 0.0 END)
+        FROM mlb.at_bats ab
+        JOIN mlb.games g ON g.game_pk = ab.game_pk
+        WHERE g.season = 2026 AND g.game_type = 'R'
+        AND (g.home_team_id = :tid OR g.away_team_id = :tid)
+        AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
+            'Caught Stealing 3B','Wild Pitch','Passed Ball')
+        HAVING COUNT(*) >= 100
+    """), {"tid": team_id}).scalar()
+    return float(result) if result else 0.224
+
+
+def get_lineup_k_factor(batter_ids: list, db, opp_team_id: int = None) -> tuple:
+    """Lineup K% vs league avg, dampened 50%, clamped [0.80, 1.25].
     Returns (k_factor, raw_lineup_k_rate) tuple.
+    Falls back to team season K rate when no lineup is posted.
     """
+    LEAGUE_K_PCT = 0.224
+
     if not batter_ids:
-        return 1.0, 0.224
+        if opp_team_id:
+            raw_k = get_team_k_rate(opp_team_id, db)
+        else:
+            return 1.0, LEAGUE_K_PCT
+        ratio = raw_k / LEAGUE_K_PCT
+        clamped = max(0.80, min(1.25, ratio))
+        dampened = 1.0 + (clamped - 1.0) * 0.5
+        return round(dampened, 3), round(raw_k, 3)
+
     result = db.execute(text("""
         SELECT SUM(bb.strikeouts)::float / NULLIF(SUM(bb.at_bats), 0)
         FROM mlb.boxscore_batting bb
@@ -241,8 +275,7 @@ def get_lineup_k_factor(batter_ids: list, db) -> tuple:
         HAVING SUM(bb.at_bats) >= 50
     """), {"bids": batter_ids}).scalar()
     if not result:
-        return 1.0, 0.224
-    LEAGUE_K_PCT = 0.251
+        return 1.0, LEAGUE_K_PCT
     raw_k = float(result)
     raw_ratio = raw_k / LEAGUE_K_PCT
     clamped = max(0.80, min(1.25, raw_ratio))
@@ -403,7 +436,7 @@ def build_daily_projections(target_date: str, db, include_final: bool = False):
                 continue
 
             avg_ip = get_pitcher_avg_ip(pitcher_id, db)
-            lineup_k, lineup_raw_k = get_lineup_k_factor(batter_ids, db)
+            lineup_k, lineup_raw_k = get_lineup_k_factor(batter_ids, db, opp_team_id=opp_team_id)
             acwr_factor = get_acwr_ip_factor(pitcher_id, db)
             proj_ip = round(avg_ip * acwr_factor, 2)
             pa_per_inn = get_pitcher_pa_per_inn(pitcher_id, db)

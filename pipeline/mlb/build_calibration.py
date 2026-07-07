@@ -43,7 +43,7 @@ BIAS_SKIP_HR      = 0.03   # skip HR adjustment when |bias_ratio - 1| < this
 
 K_CALIB_BASE      = 0.830
 K_CALIB_MIN       = 0.60
-K_CALIB_MAX       = 1.00
+K_CALIB_MAX       = 1.40  # Allow upward adjustment when under-projecting
 HR_MULT_BASE      = 1.00
 HR_MULT_MIN       = 0.70
 HR_MULT_MAX       = 1.40

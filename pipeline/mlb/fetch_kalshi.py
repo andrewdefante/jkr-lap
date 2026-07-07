@@ -145,6 +145,10 @@ def store_markets(markets: list, db) -> tuple:
         else:
             implied_prob = None
 
+        # Skip lines with no valid market pricing
+        if not implied_prob or implied_prob <= 0:
+            continue
+
         if player_uuid not in uuid_cache:
             mlbam_id, player_name = match_player_to_mlbam(kalshi_name, db)
             uuid_cache[player_uuid] = (mlbam_id, player_name or kalshi_name)

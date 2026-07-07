@@ -5716,3 +5716,99 @@ async def props_live(game_pk: int, player_id: int, player_type: str, stat: str):
         "home_runs": home_runs,
         "away_runs": away_runs,
     }
+
+
+@router.get("/parlay/builder")
+async def parlay_builder(date: str = Query(None), db: Session = Depends(get_db)):
+    """Per-pitcher parlay data: proj Ks, variance, confidence score, and all Kalshi lines."""
+    from datetime import date as date_type
+    from sqlalchemy import text as sa_text
+    import json as _json
+
+    target_date = date or str(date_type.today())
+    cache_key = f"parlay_builder_{target_date}"
+    cached = cache_get(cache_key, 120)
+    if cached:
+        return cached
+
+    rows = db.execute(sa_text("""
+        SELECT
+            dp.pitcher_id,
+            dp.pitcher_name,
+            dp.proj_ks_6inn,
+            dp.proj_ks_locked,
+            dp.proj_ks_locked IS NOT NULL  AS has_locked_proj,
+            km.all_lines
+        FROM mlb.daily_projections dp
+        LEFT JOIN LATERAL (
+            SELECT json_agg(json_build_object(
+                'floor_strike', floor_strike,
+                'yes_ask',      yes_ask,
+                'implied_prob', implied_prob
+            ) ORDER BY floor_strike) AS all_lines
+            FROM mlb.kalshi_markets
+            WHERE mlbam_id  = dp.pitcher_id
+              AND game_date  = :d
+              AND implied_prob > 0
+              AND fetch_date = (
+                  SELECT MAX(fetch_date) FROM mlb.kalshi_markets WHERE game_date = :d
+              )
+        ) km ON true
+        WHERE dp.snapshot_date = (
+            SELECT MAX(snapshot_date) FROM mlb.daily_projections WHERE snapshot_date <= :d
+        )
+        ORDER BY dp.pitcher_name
+    """), {"d": target_date}).mappings().all()
+
+    var_rows = db.execute(sa_text("""
+        SELECT da.player_id,
+               STDDEV(da.actual_k) AS std_k,
+               COUNT(*)            AS starts,
+               AVG(da.actual_k)    AS avg_k
+        FROM mlb.daily_actuals da
+        WHERE da.player_type = 'pitcher'
+          AND da.game_date >= CURRENT_DATE - 45
+          AND da.actual_k IS NOT NULL
+        GROUP BY da.player_id
+        HAVING COUNT(*) >= 3
+    """)).mappings().all()
+
+    variance = {r["player_id"]: {
+        "std_k":  float(r["std_k"] or 2.5),
+        "starts": int(r["starts"]),
+        "avg_k":  float(r["avg_k"]),
+    } for r in var_rows}
+
+    result = []
+    for row in rows:
+        pid      = row["pitcher_id"]
+        proj_ks  = float(row["proj_ks_6inn"] or 0)
+        proj_lock = float(row["proj_ks_locked"] or proj_ks)
+        pv       = variance.get(pid, {"std_k": 2.5, "starts": 0, "avg_k": proj_ks})
+        std_k    = pv["std_k"]
+        starts   = pv["starts"]
+
+        sample_conf    = min(1.0, starts / 12)
+        variance_conf  = max(0.0, 1.0 - (std_k - 1.5) / 3.5)
+        lineup_conf    = 1.0 if row["has_locked_proj"] else 0.7
+        stability_conf = 1.0 - min(0.5, abs(proj_ks - proj_lock) / max(proj_ks, 1))
+        confidence     = round((sample_conf * 0.25 + variance_conf * 0.40 +
+                                lineup_conf * 0.15 + stability_conf * 0.20) * 100)
+
+        all_lines = row["all_lines"]
+        if isinstance(all_lines, str):
+            all_lines = _json.loads(all_lines)
+
+        result.append({
+            "pitcher_id":   pid,
+            "pitcher_name": row["pitcher_name"],
+            "proj_ks_6inn": proj_ks,
+            "proj_ks_locked": proj_lock if row["has_locked_proj"] else None,
+            "std_k":        round(std_k, 2),
+            "starts":       starts,
+            "confidence":   confidence,
+            "all_lines":    all_lines or [],
+        })
+
+    cache_set(cache_key, result)
+    return result

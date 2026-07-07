@@ -428,6 +428,9 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
       <a class="left-nav-item" id="nav-props" onclick="showSection('props')">
         <span class="left-nav-icon">🎰</span> Props Tracker
       </a>
+      <a class="left-nav-item" id="nav-parlay" onclick="showSection('parlay')">
+        <span class="left-nav-icon">⚡</span> Parlay Builder
+      </a>
     </div>
   </aside>
 
@@ -825,6 +828,32 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
       </div>
     </div>
 
+    <!-- PARLAY BUILDER PANEL -->
+    <div class="panel" id="panel-parlay">
+      <div class="page-header">
+        <div class="page-eyebrow">Kalshi K Strikeout Markets</div>
+        <div class="page-title">⚡ Parlay Builder</div>
+        <div class="page-desc">Risk-adjusted K lines for each starter. Buffer scales with pitcher variance and confidence. Slider shifts the base buffer: conservative picks safer lines, aggressive pushes to the ceiling.</div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:20px;padding:14px 16px;background:#f4f7fb;border:1px solid #dce6f0;border-radius:8px">
+        <span style="font-size:12px;font-weight:600;color:#666;letter-spacing:0.06em">CONSERVATIVE</span>
+        <input type="range" id="parlay-risk-slider" min="0" max="2" step="1" value="1"
+               style="width:140px;accent-color:#1a3a5c;cursor:pointer">
+        <span style="font-size:12px;font-weight:600;color:#666;letter-spacing:0.06em">AGGRESSIVE</span>
+        <span id="parlay-risk-label" style="font-size:13px;font-weight:700;color:#1a3a5c;margin-left:8px;min-width:110px">X-2 (Moderate)</span>
+        <span style="margin-left:auto;font-size:11px;color:#999">
+          Conf: <span style="color:#2e7d32">■ High≥70</span>
+          <span style="color:#e65100">■ Mid≥50</span>
+          <span style="color:#c62828">■ Low</span>
+        </span>
+      </div>
+
+      <div id="parlay-content">
+        <div class="state-box"><div class="spinner"></div></div>
+      </div>
+    </div>
+
   </main>
 </div>
 
@@ -995,6 +1024,7 @@ function showSection(name) {
   }
   if (name === 'model-scores') loadModelScores();
   if (name === 'props') initPropsTracker();
+  if (name === 'parlay') loadParlayBuilder();
 }
 
 // ── TODAY'S GAMES ──────────────────────────────────────────────────────────
@@ -1880,26 +1910,24 @@ async function loadProfile(id, name) {
   showSection('profile');
   document.getElementById('profile-content').innerHTML = `<div class="state-box"><div class="spinner"></div><div class="state-text">Loading ${name}...</div></div>`;
   try {
-    const [seasonRes, countsRes, percRes, pitchPctRes, countsLRes, countsRRes, pitchPctLRes, pitchPctRRes] = await Promise.all([
+    const [seasonRes, countsFullRes, percRes, pitchPctRes, pitchPctLRes, pitchPctRRes, groupSplitsRes] = await Promise.all([
       fetch(`${API}/mlb/pitcher/${id}/season-comparison`),
-      fetch(`${API}/mlb/pitcher/${id}/pitch-counts?season=2026`),
+      fetch(`${API}/mlb/pitcher/${id}/pitch-counts-full?season=2026`),
       fetch(`${API}/mlb/pitcher/${id}/percentiles?season=2026`),
       fetch(`${API}/mlb/pitcher/${id}/pitch-percentiles?season=2026`),
-      fetch(`${API}/mlb/pitcher/${id}/pitch-counts?season=2026&bat_side=L`),
-      fetch(`${API}/mlb/pitcher/${id}/pitch-counts?season=2026&bat_side=R`),
       fetch(`${API}/mlb/pitcher/${id}/pitch-percentiles?season=2026&bat_side=L`),
       fetch(`${API}/mlb/pitcher/${id}/pitch-percentiles?season=2026&bat_side=R`),
+      fetch(`${API}/mlb/pitcher/${id}/pitch-group-splits?season=2026`),
     ]);
     const d = await seasonRes.json();
-    const countsData = countsRes.ok ? await countsRes.json() : {counts: []};
+    const countsFull = countsFullRes.ok ? await countsFullRes.json() : {};
     const percData = percRes.ok ? await percRes.json() : null;
     const pitchPctData = pitchPctRes.ok ? await pitchPctRes.json() : null;
-    const countsLData = countsLRes.ok ? await countsLRes.json() : {counts: []};
-    const countsRData = countsRRes.ok ? await countsRRes.json() : {counts: []};
     const pitchPctLData = pitchPctLRes.ok ? await pitchPctLRes.json() : null;
     const pitchPctRData = pitchPctRRes.ok ? await pitchPctRRes.json() : null;
-    renderProfile(d, id, countsData.counts, percData, pitchPctData,
-                  countsLData.counts, countsRData.counts, pitchPctLData, pitchPctRData);
+    const groupSplitsData = groupSplitsRes.ok ? await groupSplitsRes.json() : null;
+    renderProfile(d, id, countsFull, percData, pitchPctData,
+                  pitchPctLData, pitchPctRData, groupSplitsData);
     setTimeout(() => loadPitchViz(id), 200);
   } catch(e) {
     document.getElementById('profile-content').innerHTML = `<div class="state-box"><div class="state-text">Could not load profile</div></div>`;
@@ -2055,33 +2083,43 @@ function renderPercentileSection(metrics, title) {
 }
 
 // ── PITCHER PROFILE ───────────────────────────────────────────────────────────
-function buildPitchCountsRows(counts, arsenal, gooseByPitch) {
+function buildPitchCountsRows(seasonCounts, last14Counts, leagueAvg, arsenal, gooseByPitch) {
   if (!arsenal || !arsenal.length) return '<tr><td colspan="10" style="padding:20px;text-align:center;color:#888;font-size:13px">No data</td></tr>';
-  const countsMap = {};
-  (counts || []).forEach(c => { countsMap[c.pitch_type_code] = c; });
+  function mkMap(arr) { const m = {}; (arr||[]).forEach(c => { m[c.pitch_type_code] = c; }); return m; }
+  const sMap = mkMap(seasonCounts);
+  const fMap = mkMap(last14Counts);
+  function tri(sv, fv, lv, fmt) {
+    return `<div style="line-height:1.5">
+      <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
+      <span style="color:#bbb;font-size:11px"> / </span>
+      <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
+      <span style="color:#bbb;font-size:11px"> / </span>
+      <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
+    </div>`;
+  }
   return arsenal.map((p, i) => {
-    const cm = countsMap[p.pitch_type] || countsMap[p.pitch_type_code] || {};
-    const gp = gooseByPitch[p.pitch_type] || gooseByPitch[p.pitch_type_code] || {};
+    const pt = p.pitch_type || p.pitch_type_code;
+    const sc = sMap[pt] || {};
+    const fc = fMap[pt] || {};
+    const lc = leagueAvg[pt] || {};
+    const gp = gooseByPitch[pt] || {};
     const gooseVal = gp.goose_plus;
     const gColor = profileScoreColor(gooseVal);
-    const pt = p.pitch_type || p.pitch_type_code;
-    const whiff = p.whiff_2026r ?? p.whiff_2025;
-    const csw = p.csw_2026r ?? p.csw_2025;
-    const totalP = cm.total_pitches || p.pitches_2026r || p.pitches_2025;
+    const strikeColor = (sc.strike_pct||0) >= 65 ? '#1b5e20' : (sc.strike_pct||0) < 50 ? '#b71c1c' : '#333';
     return `<tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8">
       <td style="padding:9px 12px">
         <span style="background:${PITCH_COLORS[pt]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700">${pt}</span>
         <span style="font-size:12px;color:#333;margin-left:8px">${PNAMES[pt]||''}</span>
       </td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${totalP||'—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${p.usage_pct != null ? (p.usage_pct*100).toFixed(0)+'%' : '—'}</td>
+      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:12px">${sc.total_pitches??'—'}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(sc.usage_pct != null ? sc.usage_pct+'%' : null, fc.usage_pct != null ? fc.usage_pct+'%' : null, null, v=>v)}</td>
       <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:14px;font-weight:700;color:${gColor}">${gooseVal?.toFixed(0)||'—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${(p.velo_2026r||p.velo_2025)?.toFixed(1)||'—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px;font-weight:600;color:${cm.strike_pct>=65?'#1b5e20':cm.strike_pct<50?'#b71c1c':'#333'}">${cm.strike_pct ? cm.strike_pct+'%' : '—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${whiff != null ? (whiff*100).toFixed(1)+'%' : '—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${csw != null ? (csw*100).toFixed(1)+'%' : '—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${cm.strikes||'—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${cm.balls||'—'}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(sc.avg_velo, fc.avg_velo, lc.avg_velo, v=>v)}</td>
+      <td style="padding:9px 12px;text-align:right;font-weight:600;color:${strikeColor}">${tri(sc.strike_pct != null ? sc.strike_pct+'%' : null, fc.strike_pct != null ? fc.strike_pct+'%' : null, lc.strike_pct != null ? lc.strike_pct+'%' : null, v=>v)}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(sc.whiff_pct, fc.whiff_pct, lc.whiff_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(sc.csw_pct, fc.csw_pct, lc.csw_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:12px">${sc.strikes??'—'}</td>
+      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:12px">${sc.balls??'—'}</td>
     </tr>`;
   }).join('');
 }
@@ -2095,10 +2133,13 @@ function setPitchCountsTab(tab) {
       btn.style.borderColor = t === tab ? '#1a3a5c' : '#d0d0d0';
     }
   });
-  const data = window._profilePitchCountsCache || {};
-  const counts = data[tab] || [];
+  const cf = window._profileCountsFullCache || {};
+  const split = cf[tab] || {};
   const el = document.getElementById('pitch-counts-body');
-  if (el) el.innerHTML = buildPitchCountsRows(counts, window._profileArsenal, window._profileGooseByPitch);
+  if (el) el.innerHTML = buildPitchCountsRows(
+    split.season || [], split.last_14 || [], cf.league_avg || {},
+    window._profileArsenal, window._profileGooseByPitch
+  );
 }
 
 function setPitchMetricsTab(tab) {
@@ -2115,8 +2156,8 @@ function setPitchMetricsTab(tab) {
   updatePitchMetrics(pitchType);
 }
 
-function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pitchPercentiles=null,
-                       countsLHH=[], countsRHH=[], pitchPctLHH=null, pitchPctRHH=null) {
+function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pitchPercentiles=null,
+                       pitchPctLHH=null, pitchPctRHH=null, groupSplits=null) {
   const arsenal = data.pitch_arsenal || [];
   const name = data.pitcher_name || 'Unknown';
   const goose = data.goose_plus || {};
@@ -2129,7 +2170,7 @@ function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pi
   // Store for tab switching
   window._profileArsenal = arsenal;
   window._profileGooseByPitch = gooseByPitch;
-  window._profilePitchCountsCache = {overall: pitchCounts, lhh: countsLHH, rhh: countsRHH};
+  window._profileCountsFullCache = countsFull;
   window._profilePitchPctsCache = {overall: pitchPercentiles, lhh: pitchPctLHH, rhh: pitchPctRHH};
   window._pitchMetricsTab = 'overall';
 
@@ -2194,20 +2235,30 @@ function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pi
     ).join('')}
   </tr>`;
 
+  const _overallSplit = countsFull.overall || {};
   const pitchCountsSection = `
     <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:16px;overflow:hidden">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #e0e0e0">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #e0e0e0;flex-wrap:wrap;gap:8px">
         <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;color:#1a3a5c">Pitch Counts</div>
-        <div style="display:flex;gap:4px">
-          ${tabBtn('pct-tab-overall','Overall',true)}
-          ${tabBtn('pct-tab-lhh','Vs LHH',false)}
-          ${tabBtn('pct-tab-rhh','Vs RHH',false)}
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="font-size:10px;color:#888;font-style:italic">
+            <span style="color:#1a1a1a;font-weight:600">2026 Season</span>
+            <span style="color:#bbb"> / </span><span style="color:#444">Last 14 Days</span>
+            <span style="color:#bbb"> / </span><span style="color:#777">League Avg</span>
+          </div>
+          <div style="display:flex;gap:4px">
+            ${tabBtn('pct-tab-overall','Overall',true)}
+            ${tabBtn('pct-tab-lhh','Vs LHH',false)}
+            ${tabBtn('pct-tab-rhh','Vs RHH',false)}
+          </div>
         </div>
       </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;min-width:700px">
           <thead>${tableHeaders}</thead>
-          <tbody id="pitch-counts-body">${buildPitchCountsRows(pitchCounts, arsenal, gooseByPitch)}</tbody>
+          <tbody id="pitch-counts-body">${buildPitchCountsRows(
+            _overallSplit.season||[], _overallSplit.last_14||[], countsFull.league_avg||{},
+            arsenal, gooseByPitch)}</tbody>
         </table>
       </div>
     </div>`;
@@ -2244,8 +2295,82 @@ function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pi
     ? renderPercentileSection(percentilesData.metrics, 'Season Percentiles')
     : '';
 
+  // ── PITCHER PITCH GROUP SPLITS ────────────────────────────────────────────────
+  window._pitcherGroupSplitsData = groupSplits || {};
+  window._pitcherGroupSplitsTab = 'overall';
+
+  function buildPitcherGroupRows(seasonData, last14Data, leagueAvg) {
+    const ORDER = ['Hard','Breaking','Soft'];
+    const PG_COLORS = {'Hard':'#d93025','Breaking':'#1a73e8','Soft':'#188038'};
+    const sMap = Object.fromEntries((seasonData||[]).map(g => [g.pitch_group, g]));
+    const fMap = Object.fromEntries((last14Data||[]).map(g => [g.pitch_group, g]));
+    function tri(sv, fv, lv, fmt) {
+      return `<div style="line-height:1.5">
+        <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
+      </div>`;
+    }
+    return ORDER.map((group, i) => {
+      const s = sMap[group], f = fMap[group], l = leagueAvg[group];
+      if (!s && !f) return '';
+      const hhColor = (s?.hard_hit_pct||0) >= 45 ? '#b71c1c' : (s?.hard_hit_pct||0) <= 20 ? '#1b5e20' : '#1a1a1a';
+      return `<tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8">
+        <td style="padding:7px 10px">
+          <span style="background:${PG_COLORS[group]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700">${group}</span>
+        </td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.pitches, f?.pitches, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.bip, f?.bip, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.strike_pct, f?.strike_pct, l?.strike_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.whiff_pct, f?.whiff_pct, l?.whiff_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700;color:${hhColor}">${tri(s?.hard_hit_pct, f?.hard_hit_pct, l?.hard_hit_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_ev, f?.avg_ev, l?.avg_ev, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_la, f?.avg_la, l?.avg_la, v=>v+'°')}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function pgTabBtn(id, label, active) {
+    return `<button id="${id}" onclick="setPitcherGroupSplitsTab('${id.replace('pg-tab-','')}')"
+      style="padding:5px 12px;border-radius:4px;border:1px solid ${active?'#1a3a5c':'#d0d0d0'};
+      background:${active?'#1a3a5c':'#fff'};color:${active?'white':'#555'};
+      font-size:12px;font-weight:600;cursor:pointer;font-family:Courier New">${label}</button>`;
+  }
+
+  const pitcherGroupSplitsHTML = groupSplits ? `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <div style="font-family:'Times New Roman',serif;font-size:16px;font-weight:700;color:#1a3a5c">⚾ Pitch Group Splits</div>
+        <div style="display:flex;gap:4px">
+          ${pgTabBtn('pg-tab-overall','Overall',true)}
+          ${pgTabBtn('pg-tab-vs_lhh','vs LHH',false)}
+          ${pgTabBtn('pg-tab-vs_rhh','vs RHH',false)}
+        </div>
+      </div>
+      <div style="font-size:10px;color:#888;margin-bottom:10px;font-style:italic">
+        <span style="color:#1a1a1a;font-weight:600">2026 Season</span>
+        <span style="color:#bbb"> / </span><span style="color:#444">Last 14 Days</span>
+        <span style="color:#bbb"> / </span><span style="color:#777">League Avg</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:#1a1a1a;color:white">
+              ${['Group','Pitches','BIP','Strike%','Whiff%','Hard Hit%','Avg EV','Avg LA'].map(h =>
+                `<th style="padding:6px 10px;text-align:${h==='Group'?'left':'right'};font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody id="pitcher-group-splits-body">
+            ${buildPitcherGroupRows(groupSplits.overall?.season||[], groupSplits.overall?.last_14||[], groupSplits.league_avg||{})}
+          </tbody>
+        </table>
+      </div>
+    </div>` : '';
+
   document.getElementById('profile-content').innerHTML =
-    header + pitchCountsSection + pitchMetricsHTML +
+    header + pitchCountsSection + pitchMetricsHTML + pitcherGroupSplitsHTML +
     `<div id="live-profile-slot" style="margin-top:14px"></div>
      <div id="pitch-viz-section" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px;display:none">
        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
@@ -2274,6 +2399,54 @@ function renderProfile(data, pitcherId, pitchCounts=[], percentilesData=null, pi
 
   loadLiveForPitcher(pitcherId);
   loadGameLog(pitcherId, 2026);
+}
+
+function setPitcherGroupSplitsTab(tab) {
+  ['overall','vs_lhh','vs_rhh'].forEach(t => {
+    const btn = document.getElementById(`pg-tab-${t}`);
+    if (!btn) return;
+    const active = t === tab;
+    btn.style.background = active ? '#1a3a5c' : '#fff';
+    btn.style.color = active ? 'white' : '#555';
+    btn.style.borderColor = active ? '#1a3a5c' : '#d0d0d0';
+  });
+  window._pitcherGroupSplitsTab = tab;
+  const d = window._pitcherGroupSplitsData || {};
+  const body = document.getElementById('pitcher-group-splits-body');
+  if (!body) return;
+  const PG_COLORS = {'Hard':'#d93025','Breaking':'#1a73e8','Soft':'#188038'};
+  function buildRows(seasonData, last14Data, leagueAvg) {
+    const ORDER = ['Hard','Breaking','Soft'];
+    const sMap = Object.fromEntries((seasonData||[]).map(g => [g.pitch_group, g]));
+    const fMap = Object.fromEntries((last14Data||[]).map(g => [g.pitch_group, g]));
+    function tri(sv, fv, lv, fmt) {
+      return `<div style="line-height:1.5">
+        <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
+      </div>`;
+    }
+    return ORDER.map((group, i) => {
+      const s = sMap[group], f = fMap[group], l = leagueAvg[group];
+      if (!s && !f) return '';
+      const hhColor = (s?.hard_hit_pct||0) >= 45 ? '#b71c1c' : (s?.hard_hit_pct||0) <= 20 ? '#1b5e20' : '#1a1a1a';
+      return `<tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8">
+        <td style="padding:7px 10px">
+          <span style="background:${PG_COLORS[group]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700">${group}</span>
+        </td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.pitches, f?.pitches, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.bip, f?.bip, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.strike_pct, f?.strike_pct, l?.strike_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.whiff_pct, f?.whiff_pct, l?.whiff_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700;color:${hhColor}">${tri(s?.hard_hit_pct, f?.hard_hit_pct, l?.hard_hit_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_ev, f?.avg_ev, l?.avg_ev, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_la, f?.avg_la, l?.avg_la, v=>v+'°')}</td>
+      </tr>`;
+    }).join('');
+  }
+  body.innerHTML = buildRows(d[tab]?.season||[], d[tab]?.last_14||[], d.league_avg||{});
 }
 
 function updatePitchMetrics(pitchType) {
@@ -3218,27 +3391,41 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
   const swingRatesRhp = percs?.swing_rates_rhp || {};
 
   // ── SWING RATES TABLE (3 rows: Total / Vs LHP / Vs RHP) ──────────────────────
-  function swingRow(label, sr) {
-    const bh = sr?.backwards_helmet_pct;
+  function swingRow(label, srS, srF, srL) {
+    function tri(sv, fv, lv, fmt) {
+      return `<div style="line-height:1.6">
+        <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
+      </div>`;
+    }
+    const bh = srS?.backwards_helmet_pct;
+    const bhF = srF?.backwards_helmet_pct;
+    const bhL = srL?.backwards_helmet_pct;
     const bhC = bh > 5 ? '#1b5e20' : bh < -5 ? '#b71c1c' : '#1a1a1a';
-    const fmt = v => v != null ? v + '%' : '—';
+    const fmtBH = v => (v > 0 ? '+' : '') + v + '%';
     return `<tr style="border-bottom:1px solid #e8e8e8">
       <td style="padding:9px 14px;font-family:Courier New;font-size:13px;font-weight:600;color:#333;white-space:nowrap">${label}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${sr?.total_pitches||'—'}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">—</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.swing_pct)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.contact_pct)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.whiff_pct)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.zone_contact_pct)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px">${fmt(sr?.chase_pct)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:14px;font-weight:700;color:${bhC}">
-        ${bh != null ? (bh > 0 ? '+' : '') + bh + '%' : '—'}
-      </td>
+      <td style="padding:9px 12px;text-align:right">${tri(srS?.total_pitches, srF?.total_pitches, null, v=>v)}</td>
+      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px;color:#aaa">—</td>
+      <td style="padding:9px 12px;text-align:right">${tri(srS?.swing_pct, srF?.swing_pct, srL?.swing_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(srS?.contact_pct, srF?.contact_pct, srL?.contact_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(srS?.whiff_pct, srF?.whiff_pct, srL?.whiff_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(srS?.zone_contact_pct, srF?.zone_contact_pct, srL?.zone_contact_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right">${tri(srS?.chase_pct, srF?.chase_pct, srL?.chase_pct, v=>v+'%')}</td>
+      <td style="padding:9px 12px;text-align:right;font-weight:700;color:${bhC}">${tri(bh, bhF, bhL, fmtBH)}</td>
     </tr>`;
   }
 
   const swingRatesHTML = percs ? `
     <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:16px;overflow:hidden">
+      <div style="padding:10px 16px 8px;border-bottom:1px solid #f0f0f0;font-size:10px;color:#888;font-style:italic;text-align:right">
+        <span style="color:#1a1a1a;font-weight:600">2026 Season</span>
+        <span style="color:#bbb"> / </span><span style="color:#444">Last 14 Days</span>
+        <span style="color:#bbb"> / </span><span style="color:#777">League Avg</span>
+      </div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;min-width:760px">
           <thead><tr style="background:#1a1a1a;color:white">
@@ -3247,9 +3434,9 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
             ).join('')}
           </tr></thead>
           <tbody>
-            ${swingRow('Total', swingRates)}
-            ${swingRow('Vs LHP', swingRatesLhp)}
-            ${swingRow('Vs RHP', swingRatesRhp)}
+            ${swingRow('Total',  percs.swing_rates||{},     percs.swing_rates_14||{},     percs.swing_rates_lg||{})}
+            ${swingRow('Vs LHP', percs.swing_rates_lhp||{}, percs.swing_rates_lhp_14||{}, percs.swing_rates_lg_lhp||{})}
+            ${swingRow('Vs RHP', percs.swing_rates_rhp||{}, percs.swing_rates_rhp_14||{}, percs.swing_rates_lg_rhp||{})}
           </tbody>
         </table>
       </div>
@@ -3385,45 +3572,80 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
     </div>`;
 
   // ── PITCH GROUP SPLITS TABLE ─────────────────────────────────────────────────
-  function groupTable(grps, title) {
-    if (!grps || !grps.length) return `<div style="font-size:12px;color:#999;padding:8px 0">No data for ${title}</div>`;
-    return `
-      <div style="margin-bottom:8px">
-        <div style="font-size:12px;font-weight:700;color:#444;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:8px">${title}</div>
-        <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead>
-            <tr style="background:#1a1a1a;color:white">
-              ${['Group','Pitches','BIP','Strike%','Whiff%','Hard Hit%','Avg EV','Avg LA'].map(h =>
-                `<th style="padding:6px 10px;text-align:${h==='Group'?'left':'right'};font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em">${h}</th>`).join('')}
-            </tr>
-          </thead>
-          <tbody>
-            ${grps.map((g,i) => `
-              <tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8">
-                <td style="padding:6px 10px">
-                  <span style="background:${PITCH_GROUP_COLORS[g.pitch_group]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700">${g.pitch_group}</span>
-                </td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New">${g.pitches}</td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New">${g.bip||0}</td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New">${g.strike_pct != null ? g.strike_pct+'%' : '—'}</td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New">${g.whiff_pct != null ? g.whiff_pct+'%' : '—'}</td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New;font-weight:700;color:${(g.hard_hit_pct||0)>=45?'#1b5e20':(g.hard_hit_pct||0)<=20?'#b71c1c':'#1a1a1a'}">
-                  ${g.hard_hit_pct != null ? g.hard_hit_pct+'%' : '—'}
-                </td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New">${g.avg_ev != null ? g.avg_ev : '—'}</td>
-                <td style="padding:6px 10px;text-align:right;font-family:Courier New">${g.avg_la != null ? g.avg_la+'°' : '—'}</td>
-              </tr>`).join('')}
-          </tbody>
-        </table>
+  window._hitterGroupSplitsData = {
+    overall: groups.overall || {},
+    vs_lhp:  groups.vs_lhp  || {},
+    vs_rhp:  groups.vs_rhp  || {},
+    league_avg: groups.league_avg || {}
+  };
+  window._hitterGroupSplitsTab = 'overall';
+
+  function buildHitterGroupRows(seasonData, last14Data, leagueAvg) {
+    const ORDER = ['Hard', 'Breaking', 'Soft'];
+    const sMap = Object.fromEntries((seasonData||[]).map(g => [g.pitch_group, g]));
+    const fMap = Object.fromEntries((last14Data||[]).map(g => [g.pitch_group, g]));
+    function tri(sv, fv, lv, fmt) {
+      return `<div style="line-height:1.5">
+        <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
       </div>`;
+    }
+    return ORDER.map((group, i) => {
+      const s = sMap[group], f = fMap[group], l = leagueAvg[group];
+      if (!s && !f) return '';
+      const hhColor = (s?.hard_hit_pct||0) >= 45 ? '#1b5e20' : (s?.hard_hit_pct||0) <= 20 ? '#b71c1c' : '#1a1a1a';
+      return `<tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8">
+        <td style="padding:7px 10px">
+          <span style="background:${PITCH_GROUP_COLORS[group]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700">${group}</span>
+        </td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.pitches, f?.pitches, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.bip, f?.bip, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.strike_pct, f?.strike_pct, l?.strike_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.whiff_pct, f?.whiff_pct, l?.whiff_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700;color:${hhColor}">${tri(s?.hard_hit_pct, f?.hard_hit_pct, l?.hard_hit_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_ev, f?.avg_ev, l?.avg_ev, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_la, f?.avg_la, l?.avg_la, v=>v+'°')}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function hgTabBtn(id, label, active) {
+    return `<button id="${id}" onclick="setHitterGroupSplitsTab('${id.replace('hg-tab-','')}')"
+      style="padding:5px 12px;border-radius:4px;border:1px solid ${active?'#1a3a5c':'#d0d0d0'};
+      background:${active?'#1a3a5c':'#fff'};color:${active?'white':'#555'};
+      font-size:12px;font-weight:600;cursor:pointer;font-family:Courier New">${label}</button>`;
   }
 
   const splitsSection = `
     <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px">
-      <div style="font-family:'Times New Roman',serif;font-size:16px;font-weight:700;color:#1a3a5c;margin-bottom:16px">⚾ Pitch Group Splits</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
-        <div>${groupTable(groups.season, '2026 Season')}</div>
-        <div>${groupTable(groups.last_14, 'Last 14 Days')}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <div style="font-family:'Times New Roman',serif;font-size:16px;font-weight:700;color:#1a3a5c">⚾ Pitch Group Splits</div>
+        <div style="display:flex;gap:4px">
+          ${hgTabBtn('hg-tab-overall','Overall',true)}
+          ${hgTabBtn('hg-tab-vs_lhp','vs LHP',false)}
+          ${hgTabBtn('hg-tab-vs_rhp','vs RHP',false)}
+        </div>
+      </div>
+      <div style="font-size:10px;color:#888;margin-bottom:10px;font-style:italic">
+        <span style="color:#1a1a1a;font-weight:600">2026 Season</span>
+        <span style="color:#bbb"> / </span><span style="color:#444">Last 14 Days</span>
+        <span style="color:#bbb"> / </span><span style="color:#777">League Avg</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:#1a1a1a;color:white">
+              ${['Group','Pitches','BIP','Strike%','Whiff%','Hard Hit%','Avg EV','Avg LA'].map(h =>
+                `<th style="padding:6px 10px;text-align:${h==='Group'?'left':'right'};font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">${h}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody id="hitter-group-splits-body">
+            ${buildHitterGroupRows(groups.overall?.season||[], groups.overall?.last_14||[], groups.league_avg||{})}
+          </tbody>
+        </table>
       </div>
     </div>`;
 
@@ -3537,6 +3759,54 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
   window._hitterZones = zones;
   renderZoneGrid('zone-grid-season', zones.season || {}, 'hard_hit_pct');
   renderZoneGrid('zone-grid-14', zones.last_14 || {}, 'hard_hit_pct');
+}
+
+function setHitterGroupSplitsTab(tab) {
+  ['overall','vs_lhp','vs_rhp'].forEach(t => {
+    const btn = document.getElementById(`hg-tab-${t}`);
+    if (!btn) return;
+    const active = t === tab;
+    btn.style.background = active ? '#1a3a5c' : '#fff';
+    btn.style.color = active ? 'white' : '#555';
+    btn.style.borderColor = active ? '#1a3a5c' : '#d0d0d0';
+  });
+  window._hitterGroupSplitsTab = tab;
+  const d = window._hitterGroupSplitsData || {};
+  const body = document.getElementById('hitter-group-splits-body');
+  if (!body) return;
+  const PITCH_GROUP_COLORS = {'Hard':'#d93025','Breaking':'#1a73e8','Soft':'#188038'};
+  function buildHitterGroupRows(seasonData, last14Data, leagueAvg) {
+    const ORDER = ['Hard','Breaking','Soft'];
+    const sMap = Object.fromEntries((seasonData||[]).map(g => [g.pitch_group, g]));
+    const fMap = Object.fromEntries((last14Data||[]).map(g => [g.pitch_group, g]));
+    function tri(sv, fv, lv, fmt) {
+      return `<div style="line-height:1.5">
+        <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
+        <span style="color:#bbb;font-size:11px"> / </span>
+        <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
+      </div>`;
+    }
+    return ORDER.map((group, i) => {
+      const s = sMap[group], f = fMap[group], l = leagueAvg[group];
+      if (!s && !f) return '';
+      const hhColor = (s?.hard_hit_pct||0) >= 45 ? '#1b5e20' : (s?.hard_hit_pct||0) <= 20 ? '#b71c1c' : '#1a1a1a';
+      return `<tr style="background:${i%2===0?'#fff':'#f9f9f9'};border-bottom:1px solid #e8e8e8">
+        <td style="padding:7px 10px">
+          <span style="background:${PITCH_GROUP_COLORS[group]||'#888'};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700">${group}</span>
+        </td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.pitches, f?.pitches, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.bip, f?.bip, null, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.strike_pct, f?.strike_pct, l?.strike_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.whiff_pct, f?.whiff_pct, l?.whiff_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right;font-weight:700;color:${hhColor}">${tri(s?.hard_hit_pct, f?.hard_hit_pct, l?.hard_hit_pct, v=>v+'%')}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_ev, f?.avg_ev, l?.avg_ev, v=>v)}</td>
+        <td style="padding:7px 10px;text-align:right">${tri(s?.avg_la, f?.avg_la, l?.avg_la, v=>v+'°')}</td>
+      </tr>`;
+    }).join('');
+  }
+  body.innerHTML = buildHitterGroupRows(d[tab]?.season||[], d[tab]?.last_14||[], d.league_avg||{});
 }
 
 function toggleHitterGameRow(rowId, chevId, headerRow) {
@@ -5528,6 +5798,8 @@ function initPropsTracker() {
 }
 
 // ── Player search autocomplete ─────────────────────────────────────────────
+let _propsSearchResults = [];
+
 function propsSearchPlayers(q) {
   clearTimeout(_propsSearchTimer);
   const ac = document.getElementById('props-autocomplete');
@@ -5535,22 +5807,33 @@ function propsSearchPlayers(q) {
   _propsSearchTimer = setTimeout(async () => {
     try {
       const res = await fetch(`/mlb/props/players/search?q=${encodeURIComponent(q)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const all = [
+      _propsSearchResults = [
         ...data.pitchers.map(p => ({...p, _display: `${p.name} · Pitcher`})),
         ...data.batters.map(b => ({...b, _display: `${b.name} · Batter vs ${b.opp_pitcher_name || '?'}`}))
       ];
-      if (!all.length) { ac.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#888">No players found</div>'; }
-      else {
-        ac.innerHTML = all.map(p => `
-          <div onclick="propsSelectPlayer(${JSON.stringify(p).replace(/"/g,'&quot;')})"
+      if (!_propsSearchResults.length) {
+        ac.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:#888">No players found</div>';
+      } else {
+        ac.innerHTML = _propsSearchResults.map((p, i) => `
+          <div data-idx="${i}"
             style="padding:8px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #f0f0f0"
             onmouseenter="this.style.background='#f5f5f5'" onmouseleave="this.style.background=''">
             ${p._display}
           </div>`).join('');
+        ac.querySelectorAll('[data-idx]').forEach(el => {
+          el.addEventListener('mousedown', e => {
+            e.preventDefault();
+            propsSelectPlayer(_propsSearchResults[parseInt(el.dataset.idx)]);
+          });
+        });
       }
       ac.style.display = 'block';
-    } catch {}
+    } catch(err) {
+      ac.innerHTML = `<div style="padding:8px 12px;font-size:12px;color:#b71c1c">Error: ${err.message}</div>`;
+      ac.style.display = 'block';
+    }
   }, 280);
 }
 
@@ -5836,6 +6119,123 @@ function propsStartPolling() {
   _propsLivePollTimer = setInterval(propsRefreshLive, 60_000);
   propsRefreshLive();
 }
+
+// ── PARLAY BUILDER ─────────────────────────────────────────────────────────
+
+let _parlayData = null;
+let _parlayLoaded = false;
+
+function poissonProb(lam, n) {
+  if (lam <= 0) return 0.03;
+  let cumulative = 0, logLam = Math.log(lam), logTerm = -lam;
+  for (let k = 0; k < Math.floor(n); k++) {
+    cumulative += Math.exp(logTerm);
+    if (k < Math.floor(n) - 1) logTerm += logLam - Math.log(k + 1);
+  }
+  return Math.min(0.97, Math.max(0.03, 1.0 - cumulative));
+}
+
+function computeParlayLine(projKs, stdK, confidence, level, allLines) {
+  const baseBuffer = [3.0, 2.0, 1.0][level];
+  const confAdj    = (1.0 - confidence / 100) * 1.5;
+  const varAdj     = Math.max(0, (stdK - 2.0) * 0.3);
+  const target     = projKs - (baseBuffer + confAdj + varAdj);
+  const valid      = (allLines || []).filter(l => (l.implied_prob || 0) > 0);
+  if (!valid.length) return null;
+  const nearest    = valid.reduce((best, l) =>
+    Math.abs(l.floor_strike - target) < Math.abs(best.floor_strike - target) ? l : best);
+  const ourProb    = poissonProb(projKs, nearest.floor_strike);
+  return {
+    displayLine:  Math.round(nearest.floor_strike - 0.5),
+    ourProb,
+    impliedProb:  nearest.implied_prob,
+    floorStrike:  nearest.floor_strike,
+  };
+}
+
+function parlayRenderTable(data, level) {
+  const withLines = data.filter(p => p.all_lines && p.all_lines.length);
+  if (!withLines.length) {
+    return '<div style="color:#888;padding:20px 0;text-align:center">No Kalshi lines available yet — check back after 10 AM ET.</div>';
+  }
+
+  let rows = '';
+  for (const p of withLines) {
+    const conf      = p.confidence;
+    const confColor = conf >= 70 ? '#2e7d32' : conf >= 50 ? '#e65100' : '#c62828';
+    const l0 = computeParlayLine(p.proj_ks_6inn, p.std_k, conf, 0, p.all_lines);
+    const l1 = computeParlayLine(p.proj_ks_6inn, p.std_k, conf, 1, p.all_lines);
+    const l2 = computeParlayLine(p.proj_ks_6inn, p.std_k, conf, 2, p.all_lines);
+    const cur = [l0, l1, l2][level];
+    const fmtLine = l => l ? `${l.displayLine}+ Ks` : '—';
+    const fmtProb = l => l ? `${Math.round(l.ourProb * 100)}%` : '—';
+
+    rows += `<tr class="parlay-row" style="border-bottom:1px solid #eee"
+      data-line0="${fmtLine(l0)}" data-prob0="${fmtProb(l0)}"
+      data-line1="${fmtLine(l1)}" data-prob1="${fmtProb(l1)}"
+      data-line2="${fmtLine(l2)}" data-prob2="${fmtProb(l2)}">
+      <td style="padding:6px 10px;font-weight:600;color:${confColor}">${p.pitcher_name}</td>
+      <td style="padding:6px 10px;text-align:right">${p.proj_ks_6inn.toFixed(1)}</td>
+      <td style="padding:6px 10px;text-align:right;color:#888">${p.std_k.toFixed(1)}</td>
+      <td style="padding:6px 10px;text-align:right;color:${confColor}">${conf}%</td>
+      <td class="parlay-line" style="padding:6px 10px;text-align:right;font-weight:700;color:#1a3a5c">${fmtLine(cur)}</td>
+      <td class="parlay-prob" style="padding:6px 10px;text-align:right;color:#2e7d32">${fmtProb(cur)}</td>
+    </tr>`;
+  }
+
+  return `<table style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead><tr style="background:#1a3a5c;color:white;font-size:11px;letter-spacing:0.06em">
+      <th style="padding:8px 10px;text-align:left;font-weight:700">PITCHER</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700">PROJ Ks</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700">STD</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700">CONF</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700">LINE</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700">OUR PROB</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div style="margin-top:10px;font-size:11px;color:#999">
+    Lines in Kalshi whole-number format · Buffer = base + variance adj + low-confidence adj
+  </div>`;
+}
+
+async function loadParlayBuilder() {
+  if (_parlayLoaded && _parlayData) {
+    // Already loaded — just re-render with current slider
+    const level = parseInt(document.getElementById('parlay-risk-slider')?.value || 1);
+    document.getElementById('parlay-content').innerHTML = parlayRenderTable(_parlayData, level);
+    parlayBindSlider();
+    return;
+  }
+  const el = document.getElementById('parlay-content');
+  el.innerHTML = '<div class="state-box"><div class="spinner"></div></div>';
+
+  try {
+    const res  = await fetch(`${API}/mlb/parlay/builder?date=${todayStr()}`);
+    _parlayData = await res.json();
+    _parlayLoaded = true;
+    const level = parseInt(document.getElementById('parlay-risk-slider')?.value || 1);
+    el.innerHTML = parlayRenderTable(_parlayData, level);
+    parlayBindSlider();
+  } catch (e) {
+    el.innerHTML = '<div class="state-box" style="color:#c62828">Failed to load parlay data.</div>';
+  }
+}
+
+function parlayBindSlider() {
+  const slider = document.getElementById('parlay-risk-slider');
+  const label  = document.getElementById('parlay-risk-label');
+  if (!slider) return;
+  const labels = ['X-3 (Conservative)', 'X-2 (Moderate)', 'X-1 (Aggressive)'];
+  slider.oninput = function() {
+    const level = parseInt(this.value);
+    label.textContent = labels[level];
+    document.querySelectorAll('.parlay-row').forEach(row => {
+      row.querySelector('.parlay-line').textContent = row.dataset['line' + level] || '—';
+      row.querySelector('.parlay-prob').textContent = row.dataset['prob' + level] || '—';
+    });
+  };
+}
 </script>
 
 <!-- Mobile nav button -->
@@ -5860,6 +6260,7 @@ function propsStartPolling() {
   <div class="mobile-nav-item" onclick="mobileNav('model-scores')">📈 Model Scores</div>
   <div class="mobile-nav-item" onclick="mobileNav('metrics')">📐 Metrics &amp; Methods</div>
   <div class="mobile-nav-item" onclick="mobileNav('props')">🎰 Props Tracker</div>
+  <div class="mobile-nav-item" onclick="mobileNav('parlay')">⚡ Parlay Builder</div>
   <div style="padding:16px 20px;border-top:1px solid #333;margin-top:8px">
     <a href="/" style="color:#888;font-size:12px;font-family:'Courier New',monospace">
       ← Morning Brief

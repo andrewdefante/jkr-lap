@@ -154,7 +154,8 @@ def fetch_game(game_pk: int, db) -> str:
     if existing and existing.status == "Final":
         from datetime import datetime, timedelta, timezone
         if existing.updated_at:
-            age = datetime.now(timezone.utc) - existing.updated_at.replace(tzinfo=timezone.utc)
+            from datetime import datetime as _dt, timedelta, timezone
+            age = _dt.now(timezone.utc) - existing.updated_at.replace(tzinfo=timezone.utc)
             if age.days >= 7:
                 return "skipped"
 

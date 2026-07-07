@@ -152,7 +152,6 @@ def fetch_game(game_pk: int, db) -> str:
     # Skip if already stored
     existing = db.query(MLBRawEvent).filter(MLBRawEvent.game_pk == game_pk).first()
     if existing and existing.status == "Final":
-        from datetime import datetime, timedelta, timezone
         if existing.updated_at:
             from datetime import datetime as _dt, timedelta, timezone
             age = _dt.now(timezone.utc) - existing.updated_at.replace(tzinfo=timezone.utc)

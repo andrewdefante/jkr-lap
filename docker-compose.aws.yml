@@ -1,0 +1,51 @@
+services:
+  api:
+    build: ./api
+    container_name: sports_api
+    restart: unless-stopped
+    ports:
+      - "80:8000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      TZ: America/Los_Angeles
+      EMAIL_FROM: ${EMAIL_FROM}
+      EMAIL_TO: ${EMAIL_TO}
+      EMAIL_SMTP_HOST: ${EMAIL_SMTP_HOST}
+      EMAIL_SMTP_PORT: ${EMAIL_SMTP_PORT}
+      EMAIL_SMTP_USER: ${EMAIL_SMTP_USER}
+      EMAIL_SMTP_PASSWORD: ${EMAIL_SMTP_PASSWORD}
+    volumes:
+      - ./api:/app
+      - ./pipeline:/pipeline
+      - ./frontend:/frontend
+
+  scheduler:
+    build: ./api
+    container_name: sports_scheduler
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      TZ: America/Los_Angeles
+      EMAIL_FROM: ${EMAIL_FROM}
+      EMAIL_TO: ${EMAIL_TO}
+      EMAIL_SMTP_HOST: ${EMAIL_SMTP_HOST}
+      EMAIL_SMTP_PORT: ${EMAIL_SMTP_PORT}
+      EMAIL_SMTP_USER: ${EMAIL_SMTP_USER}
+      EMAIL_SMTP_PASSWORD: ${EMAIL_SMTP_PASSWORD}
+    volumes:
+      - ./api:/app
+      - ./pipeline:/pipeline
+    command: python3 /pipeline/daily_pipeline.py
+
+  live_poller:
+    build: ./api
+    container_name: sports_live_poller
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      TZ: America/Los_Angeles
+      API_BASE_URL: http://api:8000
+    volumes:
+      - ./api:/app
+      - ./pipeline:/pipeline
+    command: python3 /pipeline/mlb/live_poller.py

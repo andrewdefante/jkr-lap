@@ -46,6 +46,7 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       TZ: America/Los_Angeles
       API_BASE_URL: http://api:8000
+      PYTHONPATH: /app:/pipeline
     volumes:
       - ./api:/app
       - ./pipeline:/pipeline

@@ -6,7 +6,7 @@ from models.base import Base
 import models
 from routers import health, mlb, nascar, f1
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 import os
 
 app = FastAPI()
@@ -38,6 +38,10 @@ app.include_router(f1.router)
 
 @app.get("/", include_in_schema=False)
 def homepage():
+    return RedirectResponse(url="/mlb-dashboard")
+
+@app.get("/briefing", include_in_schema=False)
+def briefing():
     path = "/app/static/homepage.html"
     if os.path.exists(path):
         return FileResponse(path)
@@ -45,7 +49,7 @@ def homepage():
 
 @app.get("/morning-brief", include_in_schema=False)
 def morning_brief():
-    return homepage()
+    return briefing()
 
 @app.get("/dashboard", include_in_schema=False)
 def dashboard():

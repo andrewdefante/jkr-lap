@@ -402,7 +402,7 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
         <span class="left-nav-icon">👤</span> Pitcher Profile
       </a>
       <a class="left-nav-item" id="nav-hitter" onclick="showSection('hitter')">
-        <span class="left-nav-icon">🏏</span> Hitter Profile
+        <span class="left-nav-icon"><img src="/static/bat.jpg" style="width:20px;height:20px;object-fit:contain;vertical-align:middle"></span> Hitter Profile
       </a>
       <a class="left-nav-item" id="nav-matchup-engine" onclick="showSection('matchup-engine')" style="display:none"> <!-- temporarily hidden -->
         <span class="left-nav-icon">🎯</span> Matchup Engine
@@ -566,7 +566,7 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
 
       <!-- Hitter Projections tab -->
       <div id="lb-batters-content" style="display:none">
-        <div class="state-box"><div class="state-icon">🏏</div><div class="state-text">Click "Hitter Projections" to load</div></div>
+        <div class="state-box"><div class="state-icon"><img src="/static/bat.jpg" style="width:20px;height:20px;object-fit:contain;vertical-align:middle"></div><div class="state-text">Click "Hitter Projections" to load</div></div>
       </div>
     </div>
 
@@ -722,7 +722,7 @@ body { background:var(--bg); color:var(--gray-900); font-family:var(--font-sans)
       <div id="hitter-search-pills" style="margin-bottom:16px"></div>
       <div id="hitter-content">
         <div class="state-box">
-          <div class="state-icon">🏏</div>
+          <div class="state-icon"><img src="/static/bat.jpg" style="width:20px;height:20px;object-fit:contain;vertical-align:middle"></div>
           <div class="state-text">Search for a batter to load their profile</div>
         </div>
       </div>
@@ -1773,7 +1773,7 @@ function renderDailyBatterProjections() {
   if (!dailyBatterData.length) {
     el.innerHTML = `
       <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:40px;text-align:center">
-        <div style="font-size:32px;margin-bottom:12px">🏏</div>
+        <div style="font-size:32px;margin-bottom:12px"><img src="/static/bat.jpg" style="width:32px;height:32px;object-fit:contain;vertical-align:middle"></div>
         <div style="font-family:'Times New Roman',serif;font-size:18px;color:#1a3a5c;margin-bottom:8px">No hitter projections for ${d.snapshot_date||'today'}</div>
         <div style="font-size:13px;color:#888;margin-bottom:20px">Run the daily projection pipeline to generate today's projections</div>
         <button onclick="runAndReloadBatters()" style="padding:10px 24px;background:#1a3a5c;color:white;border:none;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer">▶ Generate Today's Projections</button>
@@ -6252,7 +6252,7 @@ function parlayBindSlider() {
     MIACORP ANALYTICS
   </div>
   <div class="mobile-nav-item" onclick="mobileNav('profile')">⚾ Pitcher Profile</div>
-  <div class="mobile-nav-item" onclick="mobileNav('hitter')">🏏 Hitter Profile</div>
+  <div class="mobile-nav-item" onclick="mobileNav('hitter')"><img src="/static/bat.jpg" style="width:20px;height:20px;object-fit:contain;vertical-align:middle"> Hitter Profile</div>
   <div class="mobile-nav-item" onclick="mobileNav('matchup-engine')">🎯 Matchup Engine</div>
   <div class="mobile-nav-item" onclick="mobileNav('games')">📅 Today's Games</div>
   <div class="mobile-nav-item" onclick="mobileNav('matchup')">⚡ Game Companion</div>

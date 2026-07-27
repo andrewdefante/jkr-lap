@@ -397,6 +397,10 @@ def run_build_today_game_projections():
                 ["--date", today])
 
 
+def run_integrity_check():
+    _run_script("Integrity Check", "/pipeline/mlb/build_integrity_check.py")
+
+
 def run_generate_homepage():
     _run_script("Morning Brief", "/pipeline/mlb/generate_homepage.py")
 
@@ -572,7 +576,7 @@ def main():
                  "splits", "workload", "scores", "game-scores", "calibration",
                  "weather", "runners", "kalshi", "actuals", "homepage",
                  "batter-tendencies", "daily-projections", "lineups",
-                 "update-status", "team-defense", "nascar", "f1", "all"],
+                 "update-status", "team-defense", "nascar", "f1", "integrity", "all"],
         help="Run a specific pipeline immediately instead of scheduling",
     )
     args = parser.parse_args()
@@ -625,6 +629,8 @@ def main():
             run_build_calibration()
         if args.now in ("game-scores", "all"):
             run_build_game_projections()
+        if args.now in ("integrity", "all"):
+            run_integrity_check()
         if args.now in ("homepage", "all"):
             run_generate_homepage()
         if args.now in ("batter-tendencies", "all"):
@@ -674,6 +680,12 @@ def main():
     # 6:05am PT — team defense rebuild (after overnight game data is loaded)
     scheduler.add_job(run_build_team_defense, CronTrigger(hour=6, minute=5, timezone=PT),
         id="team_defense_daily", name="Team defense metrics rebuild (6:05am PT)",
+        misfire_grace_time=600)
+
+    # 6:10am PT — data integrity check (after fetch, before projections)
+    scheduler.add_job(run_integrity_check, CronTrigger(hour=6, minute=10, timezone=PT),
+        id="integrity_check_daily",
+        name="Data integrity check (6:10am PT)",
         misfire_grace_time=600)
 
     # 6:30am PT — morning homepage + email
@@ -781,6 +793,7 @@ def main():
     log.info("  Actuals:            11:15pm PT nightly")
     log.info("  Final status:       11:30pm PT nightly")
     log.info("  MLB morning:         6:00am PT — fetch→BBref→models→projections + integrity email")
+    log.info("  Integrity check:     6:10am PT")
     log.info("  Morning brief:       6:30am PT / email 6:35am PT")
     log.info("  Weather + workload:  7:00am PT")
     log.info("  Projections+Kalshi:  7:30am–11pm PT every 30 min (32 runs/day)")

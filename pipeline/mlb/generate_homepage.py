@@ -6,88 +6,18 @@ Outputs to /app/static/homepage.html (served by FastAPI).
 Sections:
 1. Yesterday's Scores + Projection Results
 2. Focus Team Box Scores (SD, SEA, CIN)
-3. Kalshi vs Our Projections
+3. Pitcher Strikeout Projections
 4. Today's Outlook
 """
 import sys
 sys.path.insert(0, '/app')
 sys.path.insert(0, '/pipeline')
 
-import json
-import math
 import os
 from datetime import date, timedelta, datetime
 from zoneinfo import ZoneInfo
 from database import SessionLocal
 from sqlalchemy import text
-
-
-def poisson_cdf(lam: float, n: float) -> float:
-    """P(K >= n) given Poisson lambda. Used for Kalshi K probability."""
-    if lam <= 0:
-        return 0.03
-    cumulative = 0.0
-    log_lam = math.log(lam)
-    log_term = -lam
-    for k in range(int(n)):
-        cumulative += math.exp(log_term)
-        if k < int(n) - 1:
-            log_term += log_lam - math.log(k + 1)
-    return round(max(0.03, min(0.97, 1.0 - cumulative)), 3)
-
-def _poisson_prob(lam: float, n: float) -> float:
-    """P(K >= n) given Poisson lambda."""
-    if lam <= 0: return 0.03
-    cumulative = 0.0
-    log_lam = math.log(lam)
-    log_term = -lam
-    for k in range(int(n)):
-        cumulative += math.exp(log_term)
-        if k < int(n) - 1:
-            log_term += log_lam - math.log(k + 1)
-    return round(max(0.03, min(0.97, 1.0 - cumulative)), 3)
-
-
-def _get_optimal_parlay_line(proj_ks: float, lines: list,
-                              min_prob: float = 0.55, min_edge: float = 0.10) -> dict:
-    """Find highest line where our_prob >= min_prob AND edge >= min_edge."""
-    scored = []
-    for line in lines:
-        if not line.get('implied_prob') or line['implied_prob'] <= 0:
-            continue
-        our_prob = _poisson_prob(proj_ks, line['floor_strike'])
-        edge = our_prob - line['implied_prob']
-        scored.append({**line, 'our_prob': our_prob, 'edge': edge})
-
-    qualified = [s for s in scored if s['our_prob'] >= min_prob and s['edge'] >= min_edge]
-    if qualified:
-        return max(qualified, key=lambda x: x['floor_strike'])
-    return max(scored, key=lambda x: x['edge']) if scored else None
-
-
-def compute_parlay_line(proj_ks: float, std_k: float, confidence: int,
-                         slider_level: int, all_lines: list) -> dict | None:
-    """
-    Pick the best Kalshi line for a parlay given risk slider and pitcher confidence.
-    slider_level: 0=conservative, 1=moderate, 2=aggressive
-    """
-    base_buffer = {0: 3.0, 1: 2.0, 2: 1.0}[slider_level]
-    conf_adj    = (1.0 - confidence / 100) * 1.5
-    var_adj     = max(0.0, (std_k - 2.0) * 0.3)
-    total_buffer = base_buffer + conf_adj + var_adj
-
-    target = proj_ks - total_buffer
-    valid  = [l for l in all_lines if (l.get('implied_prob') or 0) > 0]
-    if not valid:
-        return None
-    nearest  = min(valid, key=lambda x: abs(x['floor_strike'] - target))
-    our_prob = _poisson_prob(proj_ks, nearest['floor_strike'])
-    return {
-        'floor_strike':  nearest['floor_strike'],
-        'display_line':  int(nearest['floor_strike'] - 0.5),
-        'our_prob':      our_prob,
-        'implied_prob':  nearest['implied_prob'],
-    }
 
 
 FOCUS_TEAMS = {
@@ -334,25 +264,11 @@ def get_projection_results(yesterday: date, db) -> list:
             da.proj_k_pct,
             da.proj_ks_locked,
             da.opponent_abbrev,
-            CASE WHEN g.home_team_abbrev = da.team_abbrev THEN 'vs' ELSE '@' END as venue_prefix,
-            da.kalshi_k_line,
-            da.kalshi_k_yes_price,
-            CASE
-                WHEN da.player_type = 'pitcher'
-                 AND da.proj_k_pct IS NOT NULL
-                 AND da.kalshi_k_line IS NOT NULL
-                THEN CASE
-                    WHEN (da.proj_k_pct / 100.0 * 27 > da.kalshi_k_line
-                          AND da.actual_k >= da.kalshi_k_line)
-                      OR (da.proj_k_pct / 100.0 * 27 <= da.kalshi_k_line
-                          AND da.actual_k <  da.kalshi_k_line)
-                    THEN TRUE ELSE FALSE END
-            END as k_call_correct,
-            ABS((da.proj_k_pct / 100.0 * 27 / NULLIF(da.kalshi_k_line, 0)) - 1) as edge_magnitude
+            CASE WHEN g.home_team_abbrev = da.team_abbrev THEN 'vs' ELSE '@' END as venue_prefix
         FROM mlb.daily_actuals da
         LEFT JOIN mlb.games g ON g.game_pk = da.game_pk
         WHERE da.game_date = :d AND da.proj_k_pct IS NOT NULL
-        ORDER BY edge_magnitude DESC NULLS LAST
+        ORDER BY da.player_name
     """), {"d": yesterday}).mappings().all()
     return [dict(r) for r in rows]
 
@@ -445,6 +361,99 @@ def get_pitcher_k_variance(db, days: int = 45) -> dict:
     } for r in rows}
 
 
+def get_pitcher_records(db, today) -> tuple[dict, dict]:
+    """
+    Compute pitcher and opposing-team records against the 80% confidence line.
+
+    1. Pitcher record vs 80% line (actual_k >= line_80 = W, else L)
+    2. Pitcher record vs proj_ks_locked (actual_k >= proj = W, else L)
+    3. Opposing (batting) team record vs 80% line, aggregated across every
+       start they faced this season. A team WINS when its batters hold the
+       pitcher UNDER the line (actual_k < line_80) — fewer Ks is good for
+       hitters — and LOSES when the pitcher meets/exceeds the line.
+
+    80% line formula: GREATEST(1, ROUND(proj - 1.28 * SQRT(proj)))
+
+    Returns (pitcher_records, team_records):
+        pitcher_records: {pitcher_id: {'p_vs_line': '7-1', 'p_vs_proj': '5-3'}}
+        team_records:    {opp_abbrev: '45-8'}   # W-L as the batting team
+    """
+    pitcher_rows = db.execute(text("""
+        WITH poisson_80 AS (
+            SELECT
+                dp.pitcher_id,
+                COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj,
+                da.actual_k,
+                GREATEST(1, ROUND(
+                    COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) -
+                    1.28 * SQRT(COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn))
+                )::numeric)::int as line_80
+            FROM mlb.daily_projections dp
+            JOIN mlb.daily_actuals da
+                ON da.player_id = dp.pitcher_id
+                AND da.game_date = dp.snapshot_date
+                AND da.player_type = 'pitcher'
+            WHERE dp.proj_ks_locked IS NOT NULL
+            AND da.actual_k IS NOT NULL
+            AND dp.snapshot_date >= '2026-05-20'
+        )
+        SELECT
+            pitcher_id,
+            SUM(CASE WHEN actual_k >= line_80 THEN 1 ELSE 0 END) as p_w_line,
+            SUM(CASE WHEN actual_k <  line_80 THEN 1 ELSE 0 END) as p_l_line,
+            SUM(CASE WHEN actual_k >= proj    THEN 1 ELSE 0 END) as p_w_proj,
+            SUM(CASE WHEN actual_k <  proj    THEN 1 ELSE 0 END) as p_l_proj
+        FROM poisson_80
+        GROUP BY pitcher_id
+    """), {"today": today}).mappings().all()
+
+    team_rows = db.execute(text("""
+        WITH poisson_80 AS (
+            SELECT
+                dp.opp_abbrev,
+                da.actual_k,
+                GREATEST(1, ROUND(
+                    COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) -
+                    1.28 * SQRT(COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn))
+                )::numeric)::int as line_80
+            FROM mlb.daily_projections dp
+            JOIN mlb.daily_actuals da
+                ON da.player_id = dp.pitcher_id
+                AND da.game_date = dp.snapshot_date
+                AND da.player_type = 'pitcher'
+            WHERE dp.proj_ks_locked IS NOT NULL
+            AND da.actual_k IS NOT NULL
+            AND dp.snapshot_date >= '2026-05-20'
+        )
+        SELECT
+            opp_abbrev,
+            SUM(CASE WHEN actual_k <  line_80 THEN 1 ELSE 0 END) as opp_w,
+            SUM(CASE WHEN actual_k >= line_80 THEN 1 ELSE 0 END) as opp_l
+        FROM poisson_80
+        GROUP BY opp_abbrev
+    """), {"today": today}).mappings().all()
+
+    pitcher_records = {
+        r['pitcher_id']: {
+            'p_vs_line': f"{r['p_w_line']}-{r['p_l_line']}",
+            'p_vs_proj': f"{r['p_w_proj']}-{r['p_l_proj']}",
+        }
+        for r in pitcher_rows
+    }
+    team_records = {
+        r['opp_abbrev']: f"{r['opp_w']}-{r['opp_l']}"
+        for r in team_rows
+    }
+    return pitcher_records, team_records
+
+
+def _line_80(proj_ks: float | None) -> int | None:
+    """80%-confidence K floor: GREATEST(1, ROUND(proj - 1.28 * SQRT(proj)))."""
+    if not proj_ks or proj_ks <= 0:
+        return None
+    return max(1, round(proj_ks - 1.28 * (proj_ks ** 0.5)))
+
+
 def get_today_outlook(today: date, db) -> dict:
     raw_pitchers = db.execute(text("""
         SELECT
@@ -460,13 +469,7 @@ def get_today_outlook(today: date, db) -> dict:
             dp.proj_ks_locked IS NOT NULL as has_locked_proj,
             ROUND(g3.goose3_plus::numeric,1) as goose3_plus,
             ROUND(pk.pk_plus::numeric,1)     as pk_plus,
-            ROUND(phr.phr_plus::numeric,1)   as phr_plus,
-            km.floor_strike as kalshi_line,
-            km.implied_prob as kalshi_prob,
-            km.yes_ask as kalshi_yes_price,
-            km.all_lines as all_lines,
-            NULL::float as our_implied_prob,
-            NULL::float as edge
+            ROUND(phr.phr_plus::numeric,1)   as phr_plus
         FROM mlb.daily_projections dp
         LEFT JOIN mlb.goose3_overall g3
             ON g3.pitcher_id = dp.pitcher_id AND g3.season = 2026
@@ -474,61 +477,19 @@ def get_today_outlook(today: date, db) -> dict:
             ON pk.pitcher_id = dp.pitcher_id AND pk.season = 2026
         LEFT JOIN mlb.phr_overall phr
             ON phr.pitcher_id = dp.pitcher_id AND phr.season = 2026
-        LEFT JOIN LATERAL (
-            SELECT
-                json_agg(json_build_object(
-                    'floor_strike', floor_strike,
-                    'yes_ask', yes_ask,
-                    'implied_prob', implied_prob
-                ) ORDER BY floor_strike) as all_lines,
-                MIN(floor_strike) FILTER (WHERE implied_prob > 0.02 AND implied_prob < 0.98) as floor_strike,
-                MIN(yes_ask)      FILTER (WHERE implied_prob > 0.02 AND implied_prob < 0.98) as yes_ask,
-                MIN(implied_prob) FILTER (WHERE implied_prob > 0.02 AND implied_prob < 0.98) as implied_prob
-            FROM mlb.kalshi_markets
-            WHERE mlbam_id = dp.pitcher_id
-              AND game_date = :today
-              AND implied_prob > 0
-              AND fetch_date = (SELECT MAX(fetch_date) FROM mlb.kalshi_markets WHERE game_date = :today)
-        ) km ON true
         WHERE dp.snapshot_date = (SELECT MAX(snapshot_date) FROM mlb.daily_projections)
-        ORDER BY km.implied_prob IS NULL, dp.pitcher_name
+        ORDER BY dp.pitcher_name
     """), {"today": today}).mappings().all()
 
     variance_data = get_pitcher_k_variance(db)
+    pitcher_record_data, team_record_data = get_pitcher_records(db, today)
 
     pitchers = []
     for p in raw_pitchers:
         row = dict(p)
         proj_ks      = float(row.get('proj_ks_6inn') or 0)
         proj_ks_lock = float(row.get('proj_ks_locked') or proj_ks)
-        kalshi_line  = float(row.get('kalshi_line') or 0)
-        kalshi_prob  = float(row.get('kalshi_prob') or 0)
         pitcher_id   = row.get('pitcher_id')
-
-        if proj_ks > 0 and kalshi_line > 0:
-            our_prob = poisson_cdf(proj_ks, kalshi_line)
-            row['our_implied_prob'] = our_prob
-        else:
-            row['our_implied_prob'] = None
-
-        all_lines = row.get('all_lines') or []
-        if isinstance(all_lines, str):
-            all_lines = json.loads(all_lines)
-        row['all_lines'] = all_lines
-        row['optimal'] = _get_optimal_parlay_line(proj_ks, all_lines) if all_lines and proj_ks > 0 else None
-
-        line_80 = None
-        if all_lines and proj_ks > 0:
-            candidates = []
-            for l in all_lines:
-                if (l.get('implied_prob') or 0) > 0:
-                    prob = _poisson_prob(proj_ks, l['floor_strike'])
-                    if prob >= 0.80:
-                        candidates.append((l['floor_strike'], prob))
-            if candidates:
-                best = max(candidates, key=lambda x: x[0])
-                line_80 = {'display': int(best[0] - 0.5), 'prob': best[1]}
-        row['line_80'] = line_80
 
         # Confidence score 0-100
         pv = variance_data.get(pitcher_id, {'std_k': 2.5, 'starts': 0})
@@ -542,14 +503,17 @@ def get_today_outlook(today: date, db) -> dict:
                             lineup_conf * 0.15 + stability_conf * 0.20) * 100)
         row['confidence'] = confidence
         row['std_k']      = round(std_k, 2)
+        row['line_80']    = _line_80(proj_ks_lock)
+
+        records = dict(pitcher_record_data.get(pitcher_id) or {})
+        opp_record = team_record_data.get(row.get('opp_abbrev'))
+        if opp_record:
+            records['opp_vs_line'] = opp_record
+        row['records'] = records or None
 
         pitchers.append(row)
 
-    pitchers.sort(key=lambda p: (
-        p.get('kalshi_line') is None,          # no-Kalshi rows go last
-        -(p.get('line_80') or {}).get('display', 0),  # highest 80% line first
-        -(float(p.get('proj_ks_6inn') or 0)),  # higher Ks as tiebreaker
-    ))
+    pitchers.sort(key=lambda p: -(float(p.get('proj_ks_6inn') or 0)))
 
     batters = db.execute(text("""
         SELECT
@@ -619,6 +583,22 @@ def get_today_game_projections(today: date, db) -> list:
     return [dict(r) for r in rows]
 
 
+def get_latest_integrity_check(db) -> dict | None:
+    """Latest mlb.pipeline_integrity row, if the table/data exists yet."""
+    try:
+        row = db.execute(text("""
+            SELECT check_date, games_checked, games_missing, games_fixed,
+                   pa_mismatches, status, notes
+            FROM mlb.pipeline_integrity
+            ORDER BY check_date DESC, created_at DESC
+            LIMIT 1
+        """)).mappings().first()
+        return dict(row) if row else None
+    except Exception:
+        db.rollback()
+        return None
+
+
 def get_report_mode() -> str:
     """Returns 'morning' before 9am PT, 'daytime' from 9am onward."""
     now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
@@ -632,6 +612,7 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     outlook      = get_today_outlook(today, db)
     model_score_data = get_model_scores(yesterday, db)
     today_games  = get_today_game_projections(today, db)
+    integrity_check = get_latest_integrity_check(db)
 
     focus_boxes = {}
     for abbrev, info in FOCUS_TEAMS.items():
@@ -643,12 +624,6 @@ def render_homepage(yesterday: date, today: date, db) -> str:
                 )
                 break
 
-    market_right = [r for r in proj_results
-                    if r.get('k_call_correct') is True
-                    and (r.get('edge_magnitude') or 0) >= 0.15]
-    market_wrong = [r for r in proj_results
-                    if r.get('k_call_correct') is False
-                    and (r.get('edge_magnitude') or 0) >= 0.15]
     accuracy_rows = [r for r in proj_results
                      if r.get('proj_k_pct') is not None
                      and r.get('actual_k') is not None]
@@ -675,6 +650,22 @@ def render_homepage(yesterday: date, today: date, db) -> str:
             return (f"{current_str}* "
                     f"<span style='color:#888;font-size:11px'>({float(locked):.1f})</span>")
         return current_str
+
+    def _record_cell(records, key):
+        """W-L record cell, colored by outcome; '—' if untracked or <3 starts."""
+        if not records:
+            return '—'
+        record_str = records.get(key)
+        if not record_str:
+            return '—'
+        try:
+            w, l = (int(x) for x in record_str.split('-'))
+        except (ValueError, AttributeError):
+            return '—'
+        if w + l < 3:
+            return '—'
+        color = '#1b5e20' if w > l else ('#b71c1c' if l > w else '#888')
+        return f'<span style="color:{color};font-weight:700">{record_str}</span>'
 
     def pct_fmt(v):
         return f"{v*100:.1f}%" if v is not None else "—"
@@ -745,30 +736,6 @@ def render_homepage(yesterday: date, today: date, db) -> str:
             <td style="padding:3px 12px;text-align:center;color:#888">F</td>
         </tr>"""
 
-    # ── Projection results ────────────────────────────────────────────────────
-    def market_row(r, correct):
-        icon  = "✓" if correct else "✗"
-        color = "#1b5e20" if correct else "#b71c1c"
-        our_k = (r.get('proj_k_pct') or 0) / 100 * 27
-        edge  = fmt(r.get('edge_magnitude'), 2)
-        opp = r.get('opponent_abbrev', '')
-        venue = r.get('venue_prefix', 'vs')
-        opp_str = (f" <span style='color:#888;font-size:10px'>{venue} {opp}</span>"
-                   if opp else "")
-        return f"""
-        <tr style="border-bottom:1px solid #eee">
-            <td style="padding:4px 8px;color:{color};font-weight:700">{icon}</td>
-            <td style="padding:4px 8px">{r.get('player_name','—')}{opp_str}</td>
-            <td style="padding:4px 8px;text-align:right">{r.get('kalshi_k_line','—')} Ks</td>
-            <td style="padding:4px 8px;text-align:right">{fmt(r.get('kalshi_k_yes_price'),2)}</td>
-            <td style="padding:4px 8px;text-align:right">{fmt(our_k,1)}</td>
-            <td style="padding:4px 8px;text-align:right;font-weight:700">{r.get('actual_k','—')}</td>
-            <td style="padding:4px 8px;text-align:right;color:#888">{edge}</td>
-        </tr>"""
-
-    market_right_rows = "".join(market_row(r, True)  for r in market_right[:8])
-    market_wrong_rows = "".join(market_row(r, False) for r in market_wrong[:8])
-
     # ── Batter TB table ───────────────────────────────────────────────────────
     batter_tb_rows_html = ""
     for r in batter_calls.get('tb_rows', []):
@@ -823,7 +790,6 @@ def render_homepage(yesterday: date, today: date, db) -> str:
             <td style="padding:4px 8px;text-align:right">{fmt(proj_k,1)}</td>
             <td style="padding:4px 8px;text-align:right;font-weight:700;color:{color}">{actual_k}</td>
             <td style="padding:4px 8px;text-align:right;color:{color}">{diff_str}</td>
-            <td style="padding:4px 8px;text-align:right;color:#888">{r.get('kalshi_k_line','—')}</td>
         </tr>"""
 
     # ── Focus team boxes ──────────────────────────────────────────────────────
@@ -971,35 +937,19 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     # ── Today's outlook ───────────────────────────────────────────────────────
     pitcher_rows = ""
     for p in outlook['pitchers']:
-        has_kalshi = p.get('kalshi_line') is not None
-        our_prob = p.get('our_implied_prob')
-        kal_prob = p.get('kalshi_prob')
-        line80   = p.get('line_80')
-        line80_str = (f"{line80['display']}+ Ks ({line80['prob']*100:.0f}%)"
-                      if line80 else '—')
-
         opp = p.get('opp_abbrev', '')
         venue = p.get('venue_prefix', 'vs')
         opp_str = (f" <span style='color:#888;font-size:10px;font-weight:400'>{venue} {opp}</span>"
                    if opp else "")
-        is_live = not p.get('is_live_market', True)
-        live_badge = (" <span style='color:#c0392b;font-size:9px;font-weight:700;"
-                      "letter-spacing:0.08em'>LIVE</span>" if is_live else "")
-        kal_style = "color:#888" if is_live else ""
-        row_style = "border-bottom:1px solid #eee" + (";opacity:0.85" if is_live else "")
+        records = p.get('records')
+        line_80 = p.get('line_80')
         pitcher_rows += f"""
-        <tr style="{row_style}">
-            <td style="padding:4px 8px;font-weight:700">{p.get('pitcher_name','—')}{opp_str}{live_badge}</td>
-            <td style="padding:4px 8px;text-align:right;{kal_style}">{"—" if not has_kalshi else f"{int(p['kalshi_line'] - 0.5)}+&nbsp;Ks"}</td>
-            <td style="padding:4px 8px;text-align:right;{kal_style}">{"—" if kal_prob is None else f"{kal_prob*100:.1f}%"}</td>
-            <td style="padding:4px 8px;text-align:right">{"—" if our_prob is None else f"{our_prob*100:.1f}%"}</td>
-            <td style="padding:4px 8px;text-align:right;font-weight:700;color:#1b5e20">{line80_str}</td>
-            <td style="padding:4px 8px;text-align:right;font-weight:700;color:#2d7d46">
-                {f"{int(p['optimal']['floor_strike'] - 0.5)}+ Ks" if p.get('optimal') else '—'}
-            </td>
-            <td style="padding:4px 8px;text-align:right;color:#2d7d46">
-                {f"{p['optimal']['our_prob']*100:.0f}%" if p.get('optimal') else '—'}
-            </td>
+        <tr style="border-bottom:1px solid #eee">
+            <td style="padding:4px 8px;font-weight:700">{p.get('pitcher_name','—')}{opp_str}</td>
+            <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'p_vs_line')}</td>
+            <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'p_vs_proj')}</td>
+            <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'opp_vs_line')}</td>
+            <td style="padding:4px 8px;text-align:right;color:#555">{line_80 if line_80 is not None else '—'}</td>
             <td style="padding:4px 8px;text-align:right;color:{score_color(p.get('goose3_plus'))}">{p.get('goose3_plus','—')}</td>
             <td style="padding:4px 8px;text-align:right;color:{score_color(p.get('pk_plus'))}">{p.get('pk_plus','—')}</td>
             <td style="padding:4px 8px;text-align:right">{_proj_ks_display(p)}</td>
@@ -1244,46 +1194,21 @@ def render_homepage(yesterday: date, today: date, db) -> str:
         report_label = "EVENING REPORT"
 
     recap_block = f"""<div class="section-header">Yesterday's Final Scores</div>
-<div class="col-2">
-    <table style="width:100%"><tbody>{score_rows}</tbody></table>
-    <div>
-        {'<div style="color:#888;font-size:12px">No high-edge projection calls yesterday.</div>'
-         if not market_right and not market_wrong else ""}
-        {f'''<div style="font-size:12px;font-weight:700;color:#1b5e20;
-                          letter-spacing:0.08em;margin-bottom:6px">✓ MARKET EDGE — RIGHT CALLS</div>
-        <table style="width:100%;font-size:12px;margin-bottom:12px">
-            <thead><tr>
-                <th></th><th style="text-align:left">PITCHER</th>
-                <th>LINE</th><th>MKT</th><th>PROJ Ks</th><th>ACT</th><th>EDGE</th>
-            </tr></thead>
-            <tbody>{market_right_rows}</tbody>
-        </table>''' if market_right else ""}
-        {f'''<div style="font-size:12px;font-weight:700;color:#b71c1c;
-                          letter-spacing:0.08em;margin-bottom:6px">✗ MARKET EDGE — WRONG CALLS</div>
-        <table style="width:100%;font-size:12px">
-            <thead><tr>
-                <th></th><th style="text-align:left">PITCHER</th>
-                <th>LINE</th><th>MKT</th><th>PROJ Ks</th><th>ACT</th><th>EDGE</th>
-            </tr></thead>
-            <tbody>{market_wrong_rows}</tbody>
-        </table>''' if market_wrong else ""}
-    </div>
-</div>
+<table style="width:100%;max-width:480px"><tbody>{score_rows}</tbody></table>
 
 {f'''<div style="font-size:13px;font-weight:700;letter-spacing:0.08em;margin:16px 0 8px">
     PROJECTION ACCURACY — {yest_str.upper()}</div>
 <table style="width:100%;font-size:12px;margin-bottom:4px">
     <thead><tr>
         <th style="text-align:left">PITCHER</th>
-        <th>PROJ Ks</th><th>ACTUAL</th><th>DIFF</th><th>K LINE</th>
+        <th>PROJ Ks</th><th>ACTUAL</th><th>DIFF</th>
     </tr></thead>
     <tbody>{accuracy_table_rows}</tbody>
 </table>
 <div class="footnote" style="margin-top:4px;margin-bottom:8px">
     Accuracy: <span style="color:#1b5e20">green</span> = within 1K ·
     <span style="color:#e65100">orange</span> = off by 1–2K ·
-    <span style="color:#b71c1c">red</span> = off by 3+K ·
-    Edge calls: only shown when |edge| ≥ 0.15
+    <span style="color:#b71c1c">red</span> = off by 3+K
 </div>''' if accuracy_rows else ""}
 
 {f'''<div style="font-size:13px;font-weight:700;letter-spacing:0.08em;margin:20px 0 8px">
@@ -1319,27 +1244,27 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     outlook_block = f"""<div class="section-header">Today's Outlook — {day_str}</div>
 
 <div style="font-size:13px;font-weight:700;letter-spacing:0.08em;margin-bottom:8px">
-    PITCHER STRIKEOUT PROJECTIONS vs KALSHI</div>
+    PITCHER STRIKEOUT PROJECTIONS</div>
 <table style="width:100%;font-size:12px;margin-bottom:20px">
     <thead><tr>
         <th style="text-align:left">PITCHER</th>
-        <th>K LINE</th>
-        <th>MKT PROB<div style="font-size:8px;font-weight:400;opacity:0.7">Kalshi yes price</div></th>
-        <th>OUR PROB<div style="font-size:8px;font-weight:400;opacity:0.7">P(K ≥ line)</div></th>
-        <th>80% LINE<div style="font-size:8px;font-weight:400;opacity:0.7">P ≥ 80%</div></th>
-        <th>PARLAY<div style="font-size:8px;font-weight:400;opacity:0.7">Best value</div></th>
-        <th>PARLAY PROB<div style="font-size:8px;font-weight:400;opacity:0.7">Our P(hit)</div></th>
+        <th>P vs LINE</th>
+        <th>P vs PROJ</th>
+        <th>OPP vs LINE</th>
+        <th>80% LINE</th>
         <th>Goose+3</th><th>pK+</th><th>PROJ Ks</th><th>F5 Ks</th>
     </tr></thead>
     <tbody>{pitcher_rows if pitcher_rows else
-        '<tr><td colspan="10" style="padding:8px;color:#888">No Kalshi lines matched yet — check back after 10am ET</td></tr>'
+        '<tr><td colspan="9" style="padding:8px;color:#888">No pitcher projections for today yet.</td></tr>'
     }</tbody>
 </table>
 
 <div class="footnote" style="margin-top:6px;margin-bottom:20px">
-    MKT PROB = Kalshi yes-ask price (implied probability) ·
-    OUR PROB = P(K ≥ line) via Poisson(λ = proj Ks/6 inn) ·
-    80% LINE = highest available Kalshi K line where P(K ≥ line) ≥ 80% via Poisson ·
+    P vs LINE = pitcher W-L when actual Ks ≥ our 80% confidence floor ·
+    P vs PROJ = pitcher W-L when actual Ks ≥ projection ·
+    OPP vs LINE = opposing team's batter W-L vs our 80% line ·
+    W = pitcher stayed under line (good for batters) · L = pitcher exceeded line ·
+    80% LINE = K total our model projects with ≥80% confidence ·
     PROJ Ks = full outing projection · F5 Ks = first 5 innings only ·
     * = updated since first projection · (x.x) = original pre-game locked value
 </div>
@@ -1409,6 +1334,34 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     body_blocks = (recap_block + '\n\n' + outlook_block if mode == 'morning'
                    else outlook_block + '\n\n' + recap_block)
 
+    # ── Data integrity status ────────────────────────────────────────────────
+    if integrity_check:
+        ic_ok = integrity_check['status'] == 'ok'
+        ic_color = '#1b5e20' if ic_ok else '#c0392b'
+        ic_bg = '#eaf4ea' if ic_ok else '#fdecea'
+        ic_label = 'CLEAN' if ic_ok else integrity_check['status'].upper()
+        integrity_block = f"""
+<div style="margin-top:24px;padding:10px 14px;background:{ic_bg};
+            border-left:3px solid {ic_color};font-size:11px">
+    <span style="font-weight:700;letter-spacing:0.08em;color:{ic_color}">
+        ● DATA INTEGRITY: {ic_label}
+    </span>
+    &nbsp;&nbsp;·&nbsp;&nbsp; {integrity_check['check_date']}
+    &nbsp;&nbsp;·&nbsp;&nbsp; {integrity_check['games_checked'] or 0} games checked,
+    {integrity_check['games_missing'] or 0} missing/incomplete
+    ({integrity_check['games_fixed'] or 0} fixed),
+    {integrity_check['pa_mismatches'] or 0} PA mismatches
+    <div style="color:#555;margin-top:2px">{integrity_check['notes'] or ''}</div>
+</div>"""
+    else:
+        integrity_block = """
+<div style="margin-top:24px;padding:10px 14px;background:#f5f5f5;
+            border-left:3px solid #999;font-size:11px;color:#888">
+    ● DATA INTEGRITY: no check has run yet
+</div>"""
+
+    body_blocks = body_blocks + '\n\n' + integrity_block
+
     # ── Full page ─────────────────────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1464,11 +1417,6 @@ body {{
     padding-bottom: 4px;
     margin: 28px 0 14px;
 }}
-.col-2 {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 32px;
-}}
 table {{ border-collapse: collapse; font-family: 'Courier New', monospace; }}
 th {{
     text-align: right;
@@ -1512,8 +1460,7 @@ hr {{ border: none; border-top: 1px solid #ccc; margin: 20px 0; }}
 
 <div class="footnote">
     Generated {datetime.now().strftime('%Y-%m-%d %H:%M ET')} · MiaCorp Analytics ·
-    Models: pK+ (K rate r=+0.560), pHR+ (HR rate r=−0.357), Juiced+2 (SLG r=+0.558) ·
-    Kalshi via KXMLBKS series
+    Models: pK+ (K rate r=+0.560), pHR+ (HR rate r=−0.357), Juiced+2 (SLG r=+0.558)
 </div>
 
 </body>

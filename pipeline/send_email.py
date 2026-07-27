@@ -144,6 +144,101 @@ def send_integrity_email(pipeline_log: list, pa_validation: dict) -> bool:
     return send_email(subject, body_html)
 
 
+def send_pipeline_integrity_alert(fixed_games: list, error_games: list, pa_discrepancies: list) -> bool:
+    """Send an alert email when the nightly integrity check finds missing games or PA mismatches."""
+    today = date.today().strftime("%A, %B %d, %Y")
+    subject = f"⚠️ MiaCorp Data Integrity Alert — {date.today()}"
+
+    def _game_rows(games, color):
+        rows = ""
+        for g in games:
+            rows += f"""
+            <tr>
+                <td style="padding:4px 8px">{g['game_date']}</td>
+                <td style="padding:4px 8px">{g['matchup']}</td>
+                <td style="padding:4px 8px">{g['game_pk']}</td>
+                <td style="padding:4px 8px;color:{color}">{g['reason']}</td>
+            </tr>"""
+        return rows
+
+    fixed_rows = _game_rows(fixed_games, "#2d7d46")
+    error_rows = _game_rows(error_games, "#c0392b")
+
+    pa_rows = ""
+    for d in pa_discrepancies:
+        pa_rows += f"""
+        <tr>
+            <td style="padding:4px 8px">{d['game_date']}</td>
+            <td style="padding:4px 8px">{d['game_pk']}</td>
+            <td style="padding:4px 8px;text-align:right">{d['our_pa']}</td>
+            <td style="padding:4px 8px;text-align:right">{d['api_pa']}</td>
+            <td style="padding:4px 8px;text-align:right;color:#c0392b">{d['diff']}</td>
+        </tr>"""
+
+    body_html = f"""
+    <html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:20px">
+    <div style="background:#c0392b;padding:16px 24px;margin-bottom:24px">
+        <h2 style="color:white;margin:0;font-family:Courier New;letter-spacing:0.1em">
+            MIACORP ANALYTICS
+        </h2>
+        <div style="color:#fdd;font-size:12px;font-family:Courier New">
+            DATA INTEGRITY ALERT · {today}
+        </div>
+    </div>
+
+    {f'''
+    <h3 style="color:#1a3a5c;border-bottom:2px solid #1a3a5c;padding-bottom:6px">
+        Games Fixed ({len(fixed_games)})
+    </h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px">
+        <tr style="background:#f5f5f5">
+            <th style="padding:6px 12px;text-align:left">Date</th>
+            <th style="padding:6px 12px;text-align:left">Matchup</th>
+            <th style="padding:6px 12px;text-align:left">Game PK</th>
+            <th style="padding:6px 12px;text-align:left">Reason</th>
+        </tr>
+        {fixed_rows}
+    </table>''' if fixed_games else ''}
+
+    {f'''
+    <h3 style="color:#c0392b;border-bottom:2px solid #c0392b;padding-bottom:6px">
+        Games Failed to Fix ({len(error_games)})
+    </h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:24px">
+        <tr style="background:#fdecea">
+            <th style="padding:6px 12px;text-align:left">Date</th>
+            <th style="padding:6px 12px;text-align:left">Matchup</th>
+            <th style="padding:6px 12px;text-align:left">Game PK</th>
+            <th style="padding:6px 12px;text-align:left">Reason</th>
+        </tr>
+        {error_rows}
+    </table>''' if error_games else ''}
+
+    {f'''
+    <h3 style="color:#1a3a5c;border-bottom:2px solid #1a3a5c;padding-bottom:6px">
+        PA Count Mismatches ({len(pa_discrepancies)})
+    </h3>
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <tr style="background:#f5f5f5">
+            <th style="padding:6px 12px;text-align:left">Date</th>
+            <th style="padding:6px 12px;text-align:left">Game PK</th>
+            <th style="padding:6px 12px;text-align:right">Our PA</th>
+            <th style="padding:6px 12px;text-align:right">API PA</th>
+            <th style="padding:6px 12px;text-align:right">Diff</th>
+        </tr>
+        {pa_rows}
+    </table>''' if pa_discrepancies else ''}
+
+    <div style="margin-top:32px;padding-top:16px;border-top:1px solid #ddd;
+                color:#888;font-size:11px;font-family:Courier New">
+        MiaCorp Analytics · Automated Report · {date.today()}
+    </div>
+    </body></html>
+    """
+
+    return send_email(subject, body_html)
+
+
 def send_daily_brief_email(homepage_html: str) -> bool:
     """Send the daily morning brief as email."""
     today = date.today().strftime("%A, %B %d, %Y")

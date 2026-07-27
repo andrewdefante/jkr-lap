@@ -5721,6 +5721,9 @@ async def props_live(game_pk: int, player_id: int, player_type: str, stat: str):
 @router.get("/parlay/builder")
 async def parlay_builder(date: str = Query(None), db: Session = Depends(get_db)):
     """Per-pitcher parlay data: proj Ks, variance, confidence score, and all Kalshi lines."""
+    # Kalshi integration paused
+    return []
+
     from datetime import date as date_type
     from sqlalchemy import text as sa_text
     import json as _json

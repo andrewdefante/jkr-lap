@@ -30,6 +30,9 @@ from models.mlb import (
     MLBBoxscoreFielding, MLBFieldingCredit
 )
 
+# GUMBO position codes that aren't real defensive positions
+NON_DEFENSIVE_POSITION_CODES = {"10", "11", "12"}  # DH, PH, PR
+
 
 def transform_game(raw, db):
     gd = raw.data.get("gameData", {})
@@ -307,6 +310,15 @@ def transform_boxscore(raw, db):
             stats = player_data.get("stats", {})
             batting_order = player_data.get("battingOrder")
 
+            # GUMBO encodes battingOrder as a 3-digit string: slot (1-9) * 100 + sub-index.
+            # X00 = starter in that slot, X01+ = a substitution into that slot.
+            batting_order_slot = None
+            is_starter = False
+            if batting_order:
+                batting_order_int = int(str(batting_order))
+                batting_order_slot = batting_order_int // 100
+                is_starter = (batting_order_int % 100) == 0
+
             # Batting
             b = stats.get("batting", {})
             if b:
@@ -314,7 +326,8 @@ def transform_boxscore(raw, db):
                     game_pk=raw.game_pk,
                     player_id=player_id,
                     team_id=team_id,
-                    batting_order=int(str(batting_order)[:1]) * 100 if batting_order else None,
+                    batting_order=batting_order_slot * 100 if batting_order_slot else None,
+                    is_starter=is_starter,
                     at_bats=b.get("atBats"),
                     runs=b.get("runs"),
                     hits=b.get("hits"),
@@ -337,6 +350,11 @@ def transform_boxscore(raw, db):
                     ground_into_double_play=b.get("groundIntoDoublePlay"),
                     sac_bunts=b.get("sacBunts"),
                     sac_flies=b.get("sacFlies"),
+                    plate_appearances=b.get("plateAppearances"),
+                    catchers_interference=b.get("catchersInterference"),
+                    ground_into_triple_play=b.get("groundIntoTriplePlay"),
+                    air_outs=b.get("airOuts"),
+                    ground_outs=b.get("groundOuts"),
                 ))
 
             # Pitching
@@ -373,11 +391,28 @@ def transform_boxscore(raw, db):
                     games_started=p.get("gamesStarted"),
                     complete_games=p.get("completeGames"),
                     shutouts=p.get("shutouts"),
+                    balks=p.get("balks"),
+                    games_finished=p.get("gamesFinished"),
+                    games_pitched=p.get("gamesPitched"),
+                    save_opportunities=p.get("saveOpportunities"),
                 ))
 
             # Fielding
             f = stats.get("fielding", {})
             if f:
+                primary_pos = player_data.get("position") or {}
+                primary_pos_code = primary_pos.get("code", "")
+                all_pos_raw = player_data.get("allPositions") or []
+
+                defensive_positions = [
+                    int(pos["code"])
+                    for pos in all_pos_raw
+                    if pos.get("code") not in NON_DEFENSIVE_POSITION_CODES
+                    and pos.get("code", "").isdigit()
+                ]
+                while len(defensive_positions) < 10:
+                    defensive_positions.append(None)
+
                 fielding_rows.append(MLBBoxscoreFielding(
                     game_pk=raw.game_pk,
                     player_id=player_id,
@@ -391,6 +426,20 @@ def transform_boxscore(raw, db):
                     passed_balls=f.get("passedBall"),
                     stolen_bases=f.get("stolenBases"),
                     pickoffs=f.get("pickoffs"),
+                    position=primary_pos.get("abbreviation") if primary_pos_code not in NON_DEFENSIVE_POSITION_CODES else None,
+                    all_positions=all_pos_raw if all_pos_raw else None,
+                    games_started=f.get("gamesStarted"),
+                    catchers_interference=f.get("catchersInterference"),
+                    defense_pos_n1=defensive_positions[0],
+                    defense_pos_n2=defensive_positions[1],
+                    defense_pos_n3=defensive_positions[2],
+                    defense_pos_n4=defensive_positions[3],
+                    defense_pos_n5=defensive_positions[4],
+                    defense_pos_n6=defensive_positions[5],
+                    defense_pos_n7=defensive_positions[6],
+                    defense_pos_n8=defensive_positions[7],
+                    defense_pos_n9=defensive_positions[8],
+                    defense_pos_n10=defensive_positions[9],
                 ))
 
     db.bulk_save_objects(batting_rows)

@@ -390,6 +390,12 @@ class MLBBoxscoreBatting(Base):
     ground_into_double_play = Column(Integer, nullable=True)
     sac_bunts = Column(Integer, nullable=True)
     sac_flies = Column(Integer, nullable=True)
+    plate_appearances = Column(Integer, nullable=True)
+    catchers_interference = Column(Integer, nullable=True)
+    ground_into_triple_play = Column(Integer, nullable=True)
+    air_outs = Column(Integer, nullable=True)
+    ground_outs = Column(Integer, nullable=True)
+    is_starter = Column(Boolean, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -436,6 +442,10 @@ class MLBBoxscorePitching(Base):
     games_started = Column(Integer, nullable=True)
     complete_games = Column(Integer, nullable=True)
     shutouts = Column(Integer, nullable=True)
+    balks = Column(Integer, nullable=True)
+    games_finished = Column(Integer, nullable=True)
+    games_pitched = Column(Integer, nullable=True)
+    save_opportunities = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -464,6 +474,20 @@ class MLBBoxscoreFielding(Base):
     passed_balls = Column(Integer, nullable=True)
     stolen_bases = Column(Integer, nullable=True)
     pickoffs = Column(Integer, nullable=True)
+    position = Column(String(5), nullable=True)
+    all_positions = Column(JSONB, nullable=True)
+    games_started = Column(Integer, nullable=True)
+    catchers_interference = Column(Integer, nullable=True)
+    defense_pos_n1 = Column(Integer, nullable=True)
+    defense_pos_n2 = Column(Integer, nullable=True)
+    defense_pos_n3 = Column(Integer, nullable=True)
+    defense_pos_n4 = Column(Integer, nullable=True)
+    defense_pos_n5 = Column(Integer, nullable=True)
+    defense_pos_n6 = Column(Integer, nullable=True)
+    defense_pos_n7 = Column(Integer, nullable=True)
+    defense_pos_n8 = Column(Integer, nullable=True)
+    defense_pos_n9 = Column(Integer, nullable=True)
+    defense_pos_n10 = Column(Integer, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 

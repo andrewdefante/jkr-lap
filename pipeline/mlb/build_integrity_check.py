@@ -28,7 +28,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from database import SessionLocal
 
 MLB_BASE = "https://statsapi.mlb.com/api/v1"
-PA_MISMATCH_THRESHOLD = 2
 MIN_RAW_EVENTS = 10
 
 
@@ -137,10 +136,20 @@ def find_and_fix_missing_games(db, lookback_days: int = 30) -> dict:
     }
 
 
-def validate_pa_counts(db, lookback_days: int = 7) -> list:
+def validate_pa_vs_api(db, lookback_days: int = 7) -> list:
     """
-    For each recent game, fetch MLB API boxscore and compare PA counts.
-    Returns list of discrepancies: {game_pk, game_date, our_pa, api_pa, diff}
+    For each Final game in the last lookback_days, fetch the MLB API boxscore
+    and compare total plateAppearances to our mlb.boxscore_batting.
+
+    We compare against the live API, not our own mlb.raw_events — if a game
+    was fetched mid-game, raw_events would be just as incomplete as
+    boxscore_batting, and comparing the two would false-pass. The live API
+    boxscore endpoint is lightweight (summary stats only, not full
+    play-by-play) and always reflects the final, complete state for a
+    Final game.
+
+    Any mismatch is fixed immediately: delete raw_events, re-fetch, re-transform.
+    Returns list of discrepancies: {game_pk, game_date, our_pa, api_pa, diff, fixed}
     """
     today = date.today()
     start = today - timedelta(days=lookback_days)
@@ -149,6 +158,7 @@ def validate_pa_counts(db, lookback_days: int = 7) -> list:
         SELECT game_pk, game_date
         FROM mlb.games
         WHERE game_date >= :start AND game_date <= :today
+          AND game_type = 'R'
           AND status = 'Final'
         ORDER BY game_date
     """), {"start": start.strftime("%Y-%m-%d"), "today": today.strftime("%Y-%m-%d")}).mappings().all()
@@ -158,8 +168,9 @@ def validate_pa_counts(db, lookback_days: int = 7) -> list:
         game_pk = g["game_pk"]
 
         our_pa = db.execute(text("""
-            SELECT COUNT(*) FROM mlb.boxscore_batting
-            WHERE game_pk = :pk AND at_bats > 0
+            SELECT COALESCE(SUM(plate_appearances), 0)
+            FROM mlb.boxscore_batting
+            WHERE game_pk = :pk
         """), {"pk": game_pk}).scalar() or 0
 
         try:
@@ -170,26 +181,35 @@ def validate_pa_counts(db, lookback_days: int = 7) -> list:
             print(f"    ✗ Boxscore fetch failed for {game_pk}: {e}")
             continue
 
-        # "batters" holds player IDs; per-player atBats live in players["ID<id>"].stats.batting
         api_pa = 0
         for side in ("away", "home"):
-            team = box.get("teams", {}).get(side, {})
-            players = team.get("players", {})
-            for pid in team.get("batters", []):
-                player = players.get(f"ID{pid}", {})
-                at_bats = player.get("stats", {}).get("batting", {}).get("atBats", 0)
-                if at_bats and at_bats > 0:
-                    api_pa += 1
+            players = box.get("teams", {}).get(side, {}).get("players", {})
+            for player in players.values():
+                api_pa += player.get("stats", {}).get("batting", {}).get("plateAppearances") or 0
 
-        diff = our_pa - api_pa
-        if abs(diff) > PA_MISMATCH_THRESHOLD:
-            discrepancies.append({
-                "game_pk": game_pk,
-                "game_date": g["game_date"],
-                "our_pa": our_pa,
-                "api_pa": api_pa,
-                "diff": diff,
-            })
+        diff = int(our_pa) - api_pa
+        if diff == 0:
+            continue
+
+        print(f"    ⚠️  game_pk={game_pk} {g['game_date']}: "
+              f"api={api_pa} ours={our_pa} diff={diff} — re-fetching...")
+        try:
+            fixed = _force_fetch_and_transform(game_pk, db)
+        except Exception as e:
+            fixed = False
+            print(f"      ✗ re-fetch error: {e}")
+
+        if fixed:
+            print(f"    ✅ Fixed game_pk={game_pk}")
+
+        discrepancies.append({
+            "game_pk": game_pk,
+            "game_date": g["game_date"],
+            "our_pa": int(our_pa),
+            "api_pa": api_pa,
+            "diff": diff,
+            "fixed": fixed,
+        })
 
     return discrepancies
 
@@ -266,11 +286,18 @@ def write_integrity_results(db, check_date: str, missing_summary: dict, pa_discr
 
 def main():
     parser = argparse.ArgumentParser(description="MLB pipeline integrity check")
-    parser.add_argument("--lookback", type=int, default=30,
-                         help="Days to look back for missing/incomplete games (default 30)")
-    parser.add_argument("--pa-lookback", type=int, default=7,
-                         help="Days to look back for PA validation (default 7)")
+    parser.add_argument("--lookback", type=int, default=None,
+                         help="Days to look back for missing/incomplete games (default 30). "
+                              "Also drives the PA validation lookback unless --pa-lookback is set — "
+                              "pass this alone (e.g. --lookback 150) for a full backfill pass.")
+    parser.add_argument("--pa-lookback", type=int, default=None,
+                         help="Days to look back for PA validation (default: same as --lookback "
+                              "if given, otherwise 7)")
     args = parser.parse_args()
+
+    missing_lookback = args.lookback if args.lookback is not None else 30
+    pa_lookback = args.pa_lookback if args.pa_lookback is not None else (
+        args.lookback if args.lookback is not None else 7)
 
     check_date = date.today().strftime("%Y-%m-%d")
     db = SessionLocal()
@@ -279,19 +306,20 @@ def main():
         print(f"  MLB Pipeline Integrity Check — {check_date}")
         print(f"{'='*55}")
 
-        print(f"\n  Step 1: Game Completeness (last {args.lookback} days)")
-        missing_summary = find_and_fix_missing_games(db, args.lookback)
+        print(f"\n  Step 1: Game Completeness (last {missing_lookback} days)")
+        missing_summary = find_and_fix_missing_games(db, missing_lookback)
         print(f"    Missing/incomplete: {missing_summary['games_missing']}")
         print(f"    Fixed:              {missing_summary['games_fixed']}")
         if missing_summary["games_errored"]:
             print(f"    Errors:             {missing_summary['games_errored']}")
 
-        print(f"\n  Step 2: PA Validation (last {args.pa_lookback} days)")
-        pa_discrepancies = validate_pa_counts(db, args.pa_lookback)
+        print(f"\n  Step 2: PA Validation vs live API (last {pa_lookback} days)")
+        pa_discrepancies = validate_pa_vs_api(db, pa_lookback)
         print(f"    Mismatches found: {len(pa_discrepancies)}")
         for disc in pa_discrepancies:
             print(f"      {disc['game_date']} game {disc['game_pk']}: "
-                  f"ours={disc['our_pa']} api={disc['api_pa']} diff={disc['diff']}")
+                  f"ours={disc['our_pa']} api={disc['api_pa']} diff={disc['diff']} "
+                  f"({'fixed' if disc['fixed'] else 'FIX FAILED'})")
 
         print(f"\n  Step 3: Writing results to mlb.pipeline_integrity")
         status, notes = write_integrity_results(db, check_date, missing_summary, pa_discrepancies)

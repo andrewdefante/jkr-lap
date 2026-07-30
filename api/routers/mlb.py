@@ -5815,3 +5815,272 @@ async def parlay_builder(date: str = Query(None), db: Session = Depends(get_db))
 
     cache_set(cache_key, result)
     return result
+
+
+# ── SPLITS GENERATOR ────────────────────────────────────────────────────────
+# Legit plate-appearance-ending event types from mlb.at_bats.event_type.
+# Excludes baserunning/administrative rows (caught_stealing_*, pickoff_*,
+# wild_pitch, mound_visit, substitutions, etc.) that share an at_bat_index
+# with whichever batter happened to be at the plate but are NOT that
+# batter's own plate appearance.
+_PA_EVENT_TYPES = (
+    'strikeout', 'field_out', 'single', 'walk', 'double', 'home_run',
+    'force_out', 'grounded_into_double_play', 'hit_by_pitch', 'sac_fly',
+    'field_error', 'triple', 'sac_bunt', 'intent_walk', 'fielders_choice',
+    'double_play', 'fielders_choice_out', 'strikeout_double_play',
+    'catcher_interf', 'sac_fly_double_play', 'triple_play',
+)
+# PA outcomes that don't count as an official at-bat.
+_AB_EXCLUDED_EVENT_TYPES = (
+    'walk', 'intent_walk', 'hit_by_pitch', 'sac_fly', 'sac_bunt', 'catcher_interf',
+)
+# Pitch call_codes that are NOT a swing (ball, ball in dirt, hit by pitch, pitchout, called strike).
+_NO_SWING_CALL_CODES = ('B', '*B', 'H', 'P', 'C')
+# Swing-and-miss call_codes (swinging strike, swinging strike blocked, missed bunt).
+_WHIFF_CALL_CODES = ('S', 'W', 'M')
+# Ball-in-play call_codes (out, no-out, run(s) scored).
+_IN_PLAY_CALL_CODES = ('X', 'D', 'E')
+
+
+@router.get("/pitch-types")
+def pitch_types(db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    sql = text("""
+        SELECT DISTINCT pitch_type_code as code, pitch_type_desc as name
+        FROM mlb.pitches
+        WHERE pitch_type_code IS NOT NULL
+        ORDER BY pitch_type_desc
+    """)
+    rows = db.execute(sql).mappings().all()
+    return [dict(r) for r in rows]
+
+
+@router.get("/hitter/{batter_id}/splits")
+def hitter_splits(
+    batter_id: int,
+    date_from: str = "2026-03-01",
+    date_to: str = None,
+    pitcher_hand: str = "both",
+    side: str = "both",
+    pitch_type: str = "all",
+    pitcher_id: int = None,
+    db: Session = Depends(get_db)
+):
+    from sqlalchemy import text
+    from datetime import date as _date
+
+    if not date_to:
+        date_to = _date.today().isoformat()
+
+    sql = text(f"""
+        WITH box_agg AS (
+            SELECT
+                SUM(CASE WHEN ab.event_type IN {_PA_EVENT_TYPES} THEN 1 ELSE 0 END) as pa,
+                SUM(CASE WHEN ab.event_type IN {_PA_EVENT_TYPES}
+                    AND ab.event_type NOT IN {_AB_EXCLUDED_EVENT_TYPES} THEN 1 ELSE 0 END) as ab,
+                SUM(CASE WHEN ab.event_type IN ('single','double','triple','home_run') THEN 1 ELSE 0 END) as h,
+                SUM(CASE WHEN ab.event_type = 'double' THEN 1 ELSE 0 END) as doubles,
+                SUM(CASE WHEN ab.event_type = 'home_run' THEN 1 ELSE 0 END) as hr,
+                SUM(CASE WHEN ab.event_type IN ('strikeout','strikeout_double_play') THEN 1 ELSE 0 END) as k,
+                SUM(CASE WHEN ab.event_type IN ('walk','intent_walk') THEN 1 ELSE 0 END) as bb,
+                SUM(CASE
+                    WHEN ab.event_type = 'single' THEN 1
+                    WHEN ab.event_type = 'double' THEN 2
+                    WHEN ab.event_type = 'triple' THEN 3
+                    WHEN ab.event_type = 'home_run' THEN 4
+                    ELSE 0 END) as tb
+            FROM mlb.at_bats ab
+            JOIN mlb.games g ON g.game_pk = ab.game_pk
+            WHERE ab.batter_id = :batter_id
+            AND ab.event_type IN {_PA_EVENT_TYPES}
+            AND g.game_date BETWEEN :date_from AND :date_to
+            AND g.season = 2026
+            AND g.game_type = 'R'
+            AND (:pitcher_hand = 'both' OR ab.pitch_hand = :pitcher_hand)
+            AND (CAST(:pitcher_id AS INTEGER) IS NULL OR ab.pitcher_id = :pitcher_id)
+            AND (:side = 'both'
+                 OR (:side = 'home' AND ab.half_inning = 'bottom')
+                 OR (:side = 'away' AND ab.half_inning = 'top'))
+        ),
+        pitch_agg AS (
+            SELECT
+                COUNT(*) as total_pitches,
+                SUM(CASE WHEN p.zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END) as in_zone,
+                SUM(CASE WHEN p.zone NOT BETWEEN 1 AND 9 THEN 1 ELSE 0 END) as out_zone,
+                SUM(CASE WHEN p.call_code NOT IN {_NO_SWING_CALL_CODES} THEN 1 ELSE 0 END) as swings,
+                SUM(CASE WHEN p.call_code IN {_WHIFF_CALL_CODES} THEN 1 ELSE 0 END) as whiffs,
+                SUM(CASE WHEN p.call_code IN {_IN_PLAY_CALL_CODES} THEN 1 ELSE 0 END) as in_play,
+                SUM(CASE WHEN p.zone BETWEEN 1 AND 9
+                    AND p.call_code NOT IN {_NO_SWING_CALL_CODES} THEN 1 ELSE 0 END) as zone_swings,
+                SUM(CASE WHEN p.zone BETWEEN 1 AND 9
+                    AND p.call_code IN {_IN_PLAY_CALL_CODES} THEN 1 ELSE 0 END) as zone_contact,
+                SUM(CASE WHEN p.zone NOT BETWEEN 1 AND 9
+                    AND p.call_code IN {_WHIFF_CALL_CODES} THEN 1 ELSE 0 END) as chase_whiffs
+            FROM mlb.pitches p
+            JOIN mlb.games g ON g.game_pk = p.game_pk
+            JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk AND ab.at_bat_index = p.at_bat_index
+            WHERE p.batter_id = :batter_id
+            AND g.game_date BETWEEN :date_from AND :date_to
+            AND g.season = 2026
+            AND g.game_type = 'R'
+            AND (:pitcher_hand = 'both' OR ab.pitch_hand = :pitcher_hand)
+            AND (:pitch_type = 'all' OR p.pitch_type_code = :pitch_type)
+            AND (CAST(:pitcher_id AS INTEGER) IS NULL OR p.pitcher_id = :pitcher_id)
+            AND (:side = 'both'
+                 OR (:side = 'home' AND ab.half_inning = 'bottom')
+                 OR (:side = 'away' AND ab.half_inning = 'top'))
+        )
+        SELECT
+            b.pa, b.ab, b.h, b.doubles, b.hr, b.k, b.bb, b.tb,
+            ROUND(b.h::numeric / NULLIF(b.ab, 0), 3) as avg,
+            ROUND(b.tb::numeric / NULLIF(b.ab, 0), 3) as slg,
+            ROUND(b.k::numeric / NULLIF(b.pa, 0) * 100, 1) as k_pct,
+            ROUND(b.bb::numeric / NULLIF(b.pa, 0) * 100, 1) as bb_pct,
+            p.total_pitches,
+            ROUND(p.swings::numeric / NULLIF(p.total_pitches, 0) * 100, 1) as swing_pct,
+            ROUND(p.whiffs::numeric / NULLIF(p.swings, 0) * 100, 1) as whiff_pct,
+            ROUND(p.in_play::numeric / NULLIF(p.swings, 0) * 100, 1) as contact_pct,
+            ROUND(p.zone_swings::numeric / NULLIF(p.in_zone, 0) * 100, 1) as zone_swing_pct,
+            ROUND(p.zone_contact::numeric / NULLIF(p.zone_swings, 0) * 100, 1) as zone_contact_pct,
+            ROUND(p.chase_whiffs::numeric / NULLIF(p.out_zone, 0) * 100, 1) as chase_pct
+        FROM box_agg b, pitch_agg p
+    """)
+
+    row = db.execute(sql, {
+        "batter_id": batter_id,
+        "date_from": date_from,
+        "date_to": date_to,
+        "pitcher_hand": pitcher_hand,
+        "side": side,
+        "pitch_type": pitch_type,
+        "pitcher_id": pitcher_id,
+    }).mappings().first()
+
+    return dict(row) if row else {}
+
+
+@router.get("/pitcher/{pitcher_id}/splits")
+def pitcher_splits(
+    pitcher_id: int,
+    date_from: str = "2026-03-01",
+    date_to: str = None,
+    batter_hand: str = "both",
+    side: str = "both",
+    pitch_type: str = "all",
+    batter_id: int = None,
+    db: Session = Depends(get_db)
+):
+    """
+    BF/K/BB/HR are derived from mlb.at_bats so they respect all filters
+    (batter hand, opponent batter, home/away, date range).
+
+    ER, IP, and strike/ball pitch counts come from mlb.boxscore_pitching
+    (game-level aggregates) and only respect date range and home/away —
+    earned-run attribution and pitch-level strike/ball tallies aren't
+    reconstructable per-batter from at_bats/pitches without a much larger
+    run-expectancy model, so those two fields (ERA, Strike%) will not move
+    when filtering by batter hand or a specific opponent.
+    """
+    from sqlalchemy import text
+    from datetime import date as _date
+
+    if not date_to:
+        date_to = _date.today().isoformat()
+
+    sql = text(f"""
+        WITH box_agg AS (
+            SELECT
+                SUM(CASE WHEN ab.event_type IN {_PA_EVENT_TYPES} THEN 1 ELSE 0 END) as bf,
+                SUM(CASE WHEN ab.event_type IN ('strikeout','strikeout_double_play') THEN 1 ELSE 0 END) as k,
+                SUM(CASE WHEN ab.event_type IN ('walk','intent_walk') THEN 1 ELSE 0 END) as bb,
+                SUM(CASE WHEN ab.event_type = 'home_run' THEN 1 ELSE 0 END) as hr
+            FROM mlb.at_bats ab
+            JOIN mlb.games g ON g.game_pk = ab.game_pk
+            WHERE ab.pitcher_id = :pitcher_id
+            AND ab.event_type IN {_PA_EVENT_TYPES}
+            AND g.game_date BETWEEN :date_from AND :date_to
+            AND g.season = 2026
+            AND g.game_type = 'R'
+            AND (:batter_hand = 'both' OR ab.bat_side = :batter_hand)
+            AND (CAST(:batter_id AS INTEGER) IS NULL OR ab.batter_id = :batter_id)
+            AND (:side = 'both'
+                 OR (:side = 'home' AND ab.half_inning = 'top')
+                 OR (:side = 'away' AND ab.half_inning = 'bottom'))
+        ),
+        game_agg AS (
+            SELECT
+                SUM(bp.earned_runs) as er,
+                SUM(bp.outs) as total_outs,
+                SUM(bp.pitches_thrown) as pitches,
+                SUM(bp.strikes) as strikes,
+                SUM(bp.balls) as balls
+            FROM mlb.boxscore_pitching bp
+            JOIN mlb.games g ON g.game_pk = bp.game_pk
+            WHERE bp.player_id = :pitcher_id
+            AND g.game_date BETWEEN :date_from AND :date_to
+            AND g.season = 2026
+            AND g.game_type = 'R'
+            AND (:side = 'both'
+                 OR (:side = 'home' AND g.home_team_id = bp.team_id)
+                 OR (:side = 'away' AND g.away_team_id = bp.team_id))
+        ),
+        pitch_agg AS (
+            SELECT
+                COUNT(*) as total_pitches,
+                SUM(CASE WHEN p.zone BETWEEN 1 AND 9 THEN 1 ELSE 0 END) as in_zone,
+                SUM(CASE WHEN p.zone NOT BETWEEN 1 AND 9 THEN 1 ELSE 0 END) as out_zone,
+                SUM(CASE WHEN p.call_code NOT IN {_NO_SWING_CALL_CODES} THEN 1 ELSE 0 END) as swings,
+                SUM(CASE WHEN p.call_code IN {_WHIFF_CALL_CODES} THEN 1 ELSE 0 END) as whiffs,
+                SUM(CASE WHEN p.call_code IN {_IN_PLAY_CALL_CODES} THEN 1 ELSE 0 END) as in_play,
+                SUM(CASE WHEN p.zone BETWEEN 1 AND 9
+                    AND p.call_code NOT IN {_NO_SWING_CALL_CODES} THEN 1 ELSE 0 END) as zone_swings,
+                SUM(CASE WHEN p.zone BETWEEN 1 AND 9
+                    AND p.call_code IN {_IN_PLAY_CALL_CODES} THEN 1 ELSE 0 END) as zone_contact,
+                SUM(CASE WHEN p.zone NOT BETWEEN 1 AND 9
+                    AND p.call_code IN {_WHIFF_CALL_CODES} THEN 1 ELSE 0 END) as chase_whiffs
+            FROM mlb.pitches p
+            JOIN mlb.games g ON g.game_pk = p.game_pk
+            JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk AND ab.at_bat_index = p.at_bat_index
+            WHERE p.pitcher_id = :pitcher_id
+            AND g.game_date BETWEEN :date_from AND :date_to
+            AND g.season = 2026
+            AND g.game_type = 'R'
+            AND (:batter_hand = 'both' OR ab.bat_side = :batter_hand)
+            AND (:pitch_type = 'all' OR p.pitch_type_code = :pitch_type)
+            AND (CAST(:batter_id AS INTEGER) IS NULL OR p.batter_id = :batter_id)
+            AND (:side = 'both'
+                 OR (:side = 'home' AND ab.half_inning = 'top')
+                 OR (:side = 'away' AND ab.half_inning = 'bottom'))
+        )
+        SELECT
+            b.bf, b.k, b.bb, b.hr,
+            ga.er,
+            ROUND(ga.total_outs::numeric / 3, 2) as ip,
+            ROUND(ga.er::numeric / NULLIF(ga.total_outs::numeric / 3, 0) * 9, 2) as era,
+            ROUND(b.k::numeric / NULLIF(b.bf, 0) * 100, 1) as k_pct,
+            ROUND(b.bb::numeric / NULLIF(b.bf, 0) * 100, 1) as bb_pct,
+            ga.strikes,
+            ga.balls,
+            ROUND(ga.strikes::numeric / NULLIF(ga.pitches, 0) * 100, 1) as strike_pct,
+            p.total_pitches,
+            p.whiffs,
+            ROUND(p.swings::numeric / NULLIF(p.total_pitches, 0) * 100, 1) as swing_pct,
+            ROUND(p.whiffs::numeric / NULLIF(p.swings, 0) * 100, 1) as whiff_pct,
+            ROUND(p.in_play::numeric / NULLIF(p.swings, 0) * 100, 1) as contact_pct,
+            ROUND(p.zone_swings::numeric / NULLIF(p.in_zone, 0) * 100, 1) as zone_swing_pct,
+            ROUND(p.zone_contact::numeric / NULLIF(p.zone_swings, 0) * 100, 1) as zone_contact_pct,
+            ROUND(p.chase_whiffs::numeric / NULLIF(p.out_zone, 0) * 100, 1) as chase_pct
+        FROM box_agg b, game_agg ga, pitch_agg p
+    """)
+
+    row = db.execute(sql, {
+        "pitcher_id": pitcher_id,
+        "date_from": date_from,
+        "date_to": date_to,
+        "batter_hand": batter_hand,
+        "side": side,
+        "pitch_type": pitch_type,
+        "batter_id": batter_id,
+    }).mappings().first()
+
+    return dict(row) if row else {}

@@ -1918,24 +1918,17 @@ async function loadProfile(id, name) {
   showSection('profile');
   document.getElementById('profile-content').innerHTML = `<div class="state-box"><div class="spinner"></div><div class="state-text">Loading ${name}...</div></div>`;
   try {
-    const [seasonRes, countsFullRes, percRes, pitchPctRes, pitchPctLRes, pitchPctRRes, groupSplitsRes] = await Promise.all([
+    const [seasonRes, countsFullRes, percRes, groupSplitsRes] = await Promise.all([
       fetch(`${API}/mlb/pitcher/${id}/season-comparison`),
       fetch(`${API}/mlb/pitcher/${id}/pitch-counts-full?season=2026`),
       fetch(`${API}/mlb/pitcher/${id}/percentiles?season=2026`),
-      fetch(`${API}/mlb/pitcher/${id}/pitch-percentiles?season=2026`),
-      fetch(`${API}/mlb/pitcher/${id}/pitch-percentiles?season=2026&bat_side=L`),
-      fetch(`${API}/mlb/pitcher/${id}/pitch-percentiles?season=2026&bat_side=R`),
       fetch(`${API}/mlb/pitcher/${id}/pitch-group-splits?season=2026`),
     ]);
     const d = await seasonRes.json();
     const countsFull = countsFullRes.ok ? await countsFullRes.json() : {};
     const percData = percRes.ok ? await percRes.json() : null;
-    const pitchPctData = pitchPctRes.ok ? await pitchPctRes.json() : null;
-    const pitchPctLData = pitchPctLRes.ok ? await pitchPctLRes.json() : null;
-    const pitchPctRData = pitchPctRRes.ok ? await pitchPctRRes.json() : null;
     const groupSplitsData = groupSplitsRes.ok ? await groupSplitsRes.json() : null;
-    renderProfile(d, id, countsFull, percData, pitchPctData,
-                  pitchPctLData, pitchPctRData, groupSplitsData);
+    renderProfile(d, id, countsFull, percData, groupSplitsData);
     setTimeout(() => loadPitchViz(id), 200);
   } catch(e) {
     document.getElementById('profile-content').innerHTML = `<div class="state-box"><div class="state-text">Could not load profile</div></div>`;
@@ -2150,22 +2143,7 @@ function setPitchCountsTab(tab) {
   );
 }
 
-function setPitchMetricsTab(tab) {
-  ['overall','lhh','rhh'].forEach(t => {
-    const btn = document.getElementById(`pm-tab-${t}`);
-    if (btn) {
-      btn.style.background = t === tab ? '#1a3a5c' : '#fff';
-      btn.style.color = t === tab ? 'white' : '#555';
-      btn.style.borderColor = t === tab ? '#1a3a5c' : '#d0d0d0';
-    }
-  });
-  window._pitchMetricsTab = tab;
-  const pitchType = document.getElementById('pitch-metrics-select')?.value;
-  updatePitchMetrics(pitchType);
-}
-
-function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pitchPercentiles=null,
-                       pitchPctLHH=null, pitchPctRHH=null, groupSplits=null) {
+function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, groupSplits=null) {
   const arsenal = data.pitch_arsenal || [];
   const name = data.pitcher_name || 'Unknown';
   const goose = data.goose_plus || {};
@@ -2179,8 +2157,6 @@ function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pit
   window._profileArsenal = arsenal;
   window._profileGooseByPitch = gooseByPitch;
   window._profileCountsFullCache = countsFull;
-  window._profilePitchPctsCache = {overall: pitchPercentiles, lhh: pitchPctLHH, rhh: pitchPctRHH};
-  window._pitchMetricsTab = 'overall';
 
   // ── HEADER ───────────────────────────────────────────────────────────────────
   const gooseVal = overallGoose.goose_plus;
@@ -2230,7 +2206,7 @@ function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pit
 
   // ── PITCH COUNTS TABLE ────────────────────────────────────────────────────────
   function tabBtn(id, label, active) {
-    return `<button id="${id}" onclick="${id.startsWith('pct') ? 'setPitchCountsTab' : 'setPitchMetricsTab'}('${id.split('-').pop()}')"
+    return `<button id="${id}" onclick="setPitchCountsTab('${id.split('-').pop()}')"
       style="padding:5px 12px;border-radius:4px;border:1px solid ${active?'#1a3a5c':'#d0d0d0'};
       background:${active?'#1a3a5c':'#fff'};color:${active?'white':'#555'};
       font-size:12px;font-weight:600;cursor:pointer;font-family:Courier New">${label}</button>`;
@@ -2271,32 +2247,13 @@ function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pit
       </div>
     </div>`;
 
-  // ── PITCH METRICS ────────────────────────────────────────────────────────────
-  let pitchMetricsHTML = '';
-  if (pitchPercentiles && pitchPercentiles.pitches && pitchPercentiles.pitches.length) {
-    window._pitchPercentiles = pitchPercentiles;
-    const firstPitch = pitchPercentiles.pitches[0];
-    const opts = pitchPercentiles.pitches.map(p =>
-      `<option value="${p.pitch_type}">${PNAMES[p.pitch_type]||p.pitch_type} (${p.pitches}p)</option>`
-    ).join('');
-    pitchMetricsHTML = `
-      <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-          <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;color:#1a3a5c">Pitch Metrics</div>
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <select id="pitch-metrics-select" onchange="updatePitchMetrics(this.value)"
-                    style="padding:5px 10px;border:1px solid #d0d0d0;border-radius:4px;font-size:12px;background:#fff">${opts}</select>
-            <div style="display:flex;gap:3px">
-              ${tabBtn('pm-tab-overall','Overall',true)}
-              ${tabBtn('pm-tab-lhh','Vs LHH',false)}
-              ${tabBtn('pm-tab-rhh','Vs RHH',false)}
-            </div>
-          </div>
-        </div>
-        <div id="pitch-metrics-bars">${Object.values(firstPitch.metrics).map(m => renderPercentileBar(m)).join('')}</div>
-        <div style="font-size:10px;color:#aaa;margin-top:8px;text-align:right;font-style:italic">Based on RHP averages vs all batters</div>
-      </div>`;
-  }
+  // ── SPLITS GENERATOR ────────────────────────────────────────────────────────
+  const splitsGeneratorHTML = `
+    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px">
+      <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;color:#1a3a5c;margin-bottom:12px">Splits Generator</div>
+      <div id="splits-filters-pitcher"></div>
+      <div id="splits-table-pitcher" style="margin-top:12px"></div>
+    </div>`;
 
   // ── SEASON PERCENTILES ────────────────────────────────────────────────────────
   const overallPercHTML = percentilesData
@@ -2378,7 +2335,7 @@ function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pit
     </div>` : '';
 
   document.getElementById('profile-content').innerHTML =
-    header + pitchCountsSection + pitchMetricsHTML + pitcherGroupSplitsHTML +
+    header + pitchCountsSection + splitsGeneratorHTML + pitcherGroupSplitsHTML +
     `<div id="live-profile-slot" style="margin-top:14px"></div>
      <div id="pitch-viz-section" style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px;display:none">
        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
@@ -2407,6 +2364,7 @@ function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, pit
 
   loadLiveForPitcher(pitcherId);
   loadGameLog(pitcherId, 2026);
+  initSplitsFilters('pitcher', pitcherId);
 }
 
 function setPitcherGroupSplitsTab(tab) {
@@ -2455,54 +2413,6 @@ function setPitcherGroupSplitsTab(tab) {
     }).join('');
   }
   body.innerHTML = buildRows(d[tab]?.season||[], d[tab]?.last_14||[], d.league_avg||{});
-}
-
-function updatePitchMetrics(pitchType) {
-  const tab = window._pitchMetricsTab || 'overall';
-  const cache = window._profilePitchPctsCache || {};
-  const pctsData = cache[tab] || cache['overall'] || window._pitchPercentiles;
-  if (!pctsData || !pitchType) return;
-  const pitch = (pctsData.pitches || []).find(p => p.pitch_type === pitchType);
-  if (!pitch) return;
-  const el = document.getElementById('pitch-metrics-bars');
-  if (el) el.innerHTML = Object.values(pitch.metrics).map(m => renderPercentileBar(m)).join('');
-}
-
-function setHitterMetricsTab(tab) {
-  ['lhp','rhp'].forEach(t => {
-    const btn = document.getElementById(`hm-tab-${t}`);
-    if (btn) {
-      btn.style.background = t === tab ? '#1a3a5c' : '#fff';
-      btn.style.color = t === tab ? 'white' : '#555';
-      btn.style.borderColor = t === tab ? '#1a3a5c' : '#d0d0d0';
-    }
-  });
-  window._hitterMetricsTab = tab;
-  const percs = window._hitterPercentilesData;
-  if (!percs) return;
-  const sr = tab === 'lhp' ? (percs.swing_rates_lhp || {}) : (percs.swing_rates_rhp || {});
-  const el = document.getElementById('hitter-metrics-bars');
-  if (!el) return;
-  const refP = percs.percentiles || {};
-  function buildMBar(label, value, ref_key, invert=false) {
-    const ref = refP[ref_key] || {};
-    const mn = ref.min, mx = ref.max;
-    let pct = 50;
-    if (value != null && mn != null && mx != null && mx !== mn) {
-      pct = (value - mn) / (mx - mn) * 100;
-      if (invert) pct = 100 - pct;
-      pct = Math.max(0, Math.min(100, Math.round(pct * 10) / 10));
-    }
-    return { label, value, min: mn, max: mx, percentile: pct };
-  }
-  if (!sr.total_pitches) { el.innerHTML = '<div style="color:#888;font-size:12px;padding:8px">No data</div>'; return; }
-  el.innerHTML = [
-    buildMBar('Swing%', sr.swing_pct, 'swing_pct'),
-    buildMBar('Contact%', sr.contact_pct, 'contact_pct'),
-    buildMBar('Whiff%', sr.whiff_pct, 'whiff_pct', true),
-    buildMBar('Chase%', sr.chase_pct, 'chase_pct', true),
-    buildMBar('Backwards Helmet%', sr.backwards_helmet_pct, 'backwards_helmet'),
-  ].map(m => renderPercentileBar(m)).join('');
 }
 
 async function loadGameLog(pitcherId, season) {
@@ -3204,6 +3114,287 @@ async function loadMatchupLivePitcher(pitcherId, pitcherName, gamePk) {
   }
 }
 
+// ── SPLITS GENERATOR (shared: hitter + pitcher profile pages) ──────────────────
+let _splitsPitchTypesCache = null;
+window._splitsState = window._splitsState || {};
+
+const SPLITS_LEAGUE_AVG = { avg: 0.243, slg: 0.410, era: 4.20 };
+
+function splitsStatColor(stat, val) {
+  if (val == null) return '#1a1a1a';
+  const avg = SPLITS_LEAGUE_AVG[stat];
+  if (stat === 'era') return val < avg ? '#1b5e20' : val > avg ? '#b71c1c' : '#1a1a1a';
+  return val > avg ? '#1b5e20' : val < avg ? '#b71c1c' : '#1a1a1a';
+}
+
+async function loadPitchTypes() {
+  if (_splitsPitchTypesCache) return _splitsPitchTypesCache;
+  try {
+    const res = await fetch(`${API}/mlb/pitch-types`);
+    _splitsPitchTypesCache = res.ok ? await res.json() : [];
+  } catch(e) {
+    _splitsPitchTypesCache = [];
+  }
+  return _splitsPitchTypesCache;
+}
+
+function splitsState(playerType) {
+  return window._splitsState[playerType];
+}
+
+function splitsToggleBtn(playerType, role, val, label, active) {
+  return `<button type="button" data-role="${role}" data-val="${val}"
+    onclick="setSplitsToggle('${playerType}','${role}','${val}')"
+    style="padding:5px 12px;border-radius:4px;border:1px solid ${active?'#1a3a5c':'#d0d0d0'};
+    background:${active?'#1a3a5c':'#fff'};color:${active?'white':'#555'};
+    font-size:12px;font-weight:600;cursor:pointer;font-family:'Courier New'">${label}</button>`;
+}
+
+function renderSplitsFilterBar(playerType, seasonStart, today) {
+  const handLabel1 = playerType === 'pitcher' ? 'vs LHH' : 'vs LHP';
+  const handLabel2 = playerType === 'pitcher' ? 'vs RHH' : 'vs RHP';
+  const oppLabel = playerType === 'pitcher' ? 'vs Hitter...' : 'vs Pitcher...';
+  const dateInputStyle = 'padding:4px 6px;border:1px solid #d0d0d0;border-radius:4px;font-size:12px;font-family:\'Courier New\';margin-left:4px';
+  const presetBtnStyle = 'padding:5px 10px;border-radius:4px;border:1px solid #d0d0d0;background:#fff;color:#555;font-size:12px;font-weight:600;cursor:pointer;font-family:\'Courier New\'';
+  return `
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px">
+      <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+        <button type="button" onclick="setSplitsPreset('${playerType}',7)" style="${presetBtnStyle}">Last 7</button>
+        <button type="button" onclick="setSplitsPreset('${playerType}',14)" style="${presetBtnStyle}">Last 14</button>
+        <label style="font-size:11px;color:#888;margin-left:6px">From
+          <input type="date" id="splits-from-${playerType}" value="${seasonStart}" min="${seasonStart}" max="${today}"
+            onchange="setSplitsDate('${playerType}','from',this.value)" style="${dateInputStyle}">
+        </label>
+        <label style="font-size:11px;color:#888">To
+          <input type="date" id="splits-to-${playerType}" value="${today}" min="${seasonStart}" max="${today}"
+            onchange="setSplitsDate('${playerType}','to',this.value)" style="${dateInputStyle}">
+        </label>
+      </div>
+      <div style="display:flex;gap:3px" id="splits-hand-group-${playerType}">
+        ${splitsToggleBtn(playerType,'hand','L',handLabel1,false)}
+        ${splitsToggleBtn(playerType,'hand','R',handLabel2,false)}
+        ${splitsToggleBtn(playerType,'hand','both','Both',true)}
+      </div>
+      <div style="display:flex;gap:3px" id="splits-side-group-${playerType}">
+        ${splitsToggleBtn(playerType,'side','home','🏠 Home',false)}
+        ${splitsToggleBtn(playerType,'side','away','✈ Away',false)}
+        ${splitsToggleBtn(playerType,'side','both','Both',true)}
+      </div>
+      <select id="splits-pitch-type-${playerType}" onchange="setSplitsPitchType('${playerType}',this.value)"
+        style="padding:5px 10px;border:1px solid #d0d0d0;border-radius:4px;font-size:12px;background:#fff;font-family:'Courier New'">
+        <option value="all">All Pitches</option>
+      </select>
+      <div style="position:relative;min-width:180px">
+        <input type="text" id="splits-opp-search-${playerType}" placeholder="${oppLabel}" autocomplete="off"
+          oninput="searchSplitsOpponent('${playerType}',this.value)"
+          style="padding:5px 10px;border:1px solid #d0d0d0;border-radius:4px;font-size:12px;font-family:'Courier New';width:100%;box-sizing:border-box">
+        <div id="splits-opp-pills-${playerType}" style="position:absolute;top:100%;left:0;z-index:10;background:#fff;border:1px solid #d0d0d0;border-radius:4px;margin-top:2px;min-width:200px;box-shadow:0 2px 6px rgba(0,0,0,0.1)"></div>
+        <div id="splits-opp-active-${playerType}" style="font-size:11px;color:#1a3a5c;margin-top:3px"></div>
+      </div>
+    </div>`;
+}
+
+async function initSplitsFilters(playerType, playerId) {
+  const seasonStart = '2026-03-01';
+  const today = new Date().toISOString().slice(0,10);
+  window._splitsState[playerType] = {
+    playerId, dateFrom: seasonStart, dateTo: today,
+    hand: 'both', side: 'both', pitchType: 'all', oppId: null, oppName: null
+  };
+
+  const filtersEl = document.getElementById(`splits-filters-${playerType}`);
+  if (!filtersEl) return;
+  filtersEl.innerHTML = renderSplitsFilterBar(playerType, seasonStart, today);
+
+  loadPitchTypes().then(pitchTypes => {
+    const sel = document.getElementById(`splits-pitch-type-${playerType}`);
+    if (sel) {
+      sel.innerHTML = '<option value="all">All Pitches</option>' +
+        pitchTypes.map(p => `<option value="${p.code}">${p.name}</option>`).join('');
+    }
+  });
+
+  loadSplitsGenerator(playerType, playerId);
+}
+
+function setSplitsToggle(playerType, role, val) {
+  const st = splitsState(playerType); if (!st) return;
+  st[role] = val;
+  const group = document.getElementById(`splits-${role}-group-${playerType}`);
+  if (group) group.querySelectorAll('button').forEach(b => {
+    const active = b.dataset.val === val;
+    b.style.background = active ? '#1a3a5c' : '#fff';
+    b.style.color = active ? 'white' : '#555';
+    b.style.borderColor = active ? '#1a3a5c' : '#d0d0d0';
+  });
+  loadSplitsGenerator(playerType, st.playerId);
+}
+
+function setSplitsDate(playerType, which, value) {
+  const st = splitsState(playerType); if (!st) return;
+  if (which === 'from') st.dateFrom = value; else st.dateTo = value;
+  loadSplitsGenerator(playerType, st.playerId);
+}
+
+function setSplitsPreset(playerType, days) {
+  const st = splitsState(playerType); if (!st) return;
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  st.dateFrom = from.toISOString().slice(0,10);
+  st.dateTo = to.toISOString().slice(0,10);
+  const fromEl = document.getElementById(`splits-from-${playerType}`);
+  const toEl = document.getElementById(`splits-to-${playerType}`);
+  if (fromEl) fromEl.value = st.dateFrom;
+  if (toEl) toEl.value = st.dateTo;
+  loadSplitsGenerator(playerType, st.playerId);
+}
+
+function setSplitsPitchType(playerType, value) {
+  const st = splitsState(playerType); if (!st) return;
+  st.pitchType = value;
+  loadSplitsGenerator(playerType, st.playerId);
+}
+
+let _splitsOppSearchTimer = null;
+function searchSplitsOpponent(playerType, q) {
+  clearTimeout(_splitsOppSearchTimer);
+  const pillsEl = document.getElementById(`splits-opp-pills-${playerType}`);
+  if (!pillsEl) return;
+  if (!q || q.trim().length < 2) { pillsEl.innerHTML = ''; return; }
+  _splitsOppSearchTimer = setTimeout(async () => {
+    const endpoint = playerType === 'pitcher' ? 'hitter-search' : 'pitcher-search';
+    try {
+      const res = await fetch(`${API}/mlb/${endpoint}?q=${encodeURIComponent(q.trim())}`);
+      const results = res.ok ? await res.json() : [];
+      if (!results.length) {
+        pillsEl.innerHTML = '<div style="padding:6px 10px;font-size:11px;color:#888">No results</div>';
+        return;
+      }
+      pillsEl.innerHTML = results.map(r => {
+        const id = r.player_id != null ? r.player_id : r.pitcher_id;
+        const name = r.player_name || r.pitcher_name;
+        return `<div style="padding:6px 10px;font-size:12px;cursor:pointer;border-bottom:1px solid #f0f0f0"
+          onmouseover="this.style.background='#f5f5f5'" onmouseout="this.style.background='#fff'"
+          onclick="selectSplitsOpponent('${playerType}',${id},'${esc(name)}')">${name}</div>`;
+      }).join('');
+    } catch(e) {
+      pillsEl.innerHTML = '';
+    }
+  }, 250);
+}
+
+function selectSplitsOpponent(playerType, id, name) {
+  const st = splitsState(playerType); if (!st) return;
+  st.oppId = id; st.oppName = name;
+  const pillsEl = document.getElementById(`splits-opp-pills-${playerType}`);
+  if (pillsEl) pillsEl.innerHTML = '';
+  const searchEl = document.getElementById(`splits-opp-search-${playerType}`);
+  if (searchEl) searchEl.value = '';
+  const activeEl = document.getElementById(`splits-opp-active-${playerType}`);
+  if (activeEl) activeEl.innerHTML = `vs ${name} <span style="cursor:pointer;color:#b71c1c" onclick="clearSplitsOpponent('${playerType}')">✕</span>`;
+  loadSplitsGenerator(playerType, st.playerId);
+}
+
+function clearSplitsOpponent(playerType) {
+  const st = splitsState(playerType); if (!st) return;
+  st.oppId = null; st.oppName = null;
+  const activeEl = document.getElementById(`splits-opp-active-${playerType}`);
+  if (activeEl) activeEl.innerHTML = '';
+  loadSplitsGenerator(playerType, st.playerId);
+}
+
+async function loadSplitsGenerator(playerType, playerId) {
+  const st = splitsState(playerType);
+  if (!st) return;
+  const tableEl = document.getElementById(`splits-table-${playerType}`);
+  if (!tableEl) return;
+  tableEl.innerHTML = `<div class="state-box" style="padding:20px"><div class="spinner"></div></div>`;
+
+  const params = new URLSearchParams({
+    date_from: st.dateFrom,
+    date_to: st.dateTo,
+    side: st.side,
+    pitch_type: st.pitchType,
+  });
+  if (playerType === 'hitter') {
+    params.set('pitcher_hand', st.hand);
+    if (st.oppId != null) params.set('pitcher_id', st.oppId);
+  } else {
+    params.set('batter_hand', st.hand);
+    if (st.oppId != null) params.set('batter_id', st.oppId);
+  }
+
+  const endpoint = playerType === 'hitter' ? `hitter/${playerId}/splits` : `pitcher/${playerId}/splits`;
+  try {
+    const res = await fetch(`${API}/mlb/${endpoint}?${params.toString()}`);
+    if (!res.ok) {
+      tableEl.innerHTML = `<div class="state-box"><div class="state-text">No data for selected filters</div></div>`;
+      return;
+    }
+    const data = await res.json();
+    tableEl.innerHTML = renderSplitsTable(playerType, data);
+  } catch(e) {
+    tableEl.innerHTML = `<div class="state-box"><div class="state-text">Error loading splits</div></div>`;
+  }
+}
+
+function renderSplitsTable(playerType, d) {
+  const noData = playerType === 'hitter' ? (d.pa == null) : (d.bf == null);
+  if (noData) {
+    return `<div class="state-box" style="padding:20px"><div class="state-text">No data for selected filters</div></div>`;
+  }
+
+  const fmtPct = v => v != null ? v + '%' : '—';
+  const fmt3  = v => v != null ? Number(v).toFixed(3) : '—';
+  const fmt2  = v => v != null ? Number(v).toFixed(2) : '—';
+  const fmtN  = v => v != null ? v : '—';
+
+  function buildTable(headers, cells) {
+    return `
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;margin-bottom:12px;min-width:520px">
+          <thead><tr style="background:#1a1a1a;color:white">
+            ${headers.map(h => `<th style="padding:8px 12px;text-align:right;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">${h}</th>`).join('')}
+          </tr></thead>
+          <tbody><tr style="border-bottom:1px solid #e8e8e8">
+            ${cells.map(c => `<td style="padding:9px 12px;text-align:right;font-family:'Courier New';font-size:13px">${c}</td>`).join('')}
+          </tr></tbody>
+        </table>
+      </div>`;
+  }
+
+  if (playerType === 'pitcher') {
+    const countingHeaders = ['BF','K','BB','HR','ER','Whiffs','Strikes','Balls','IP','Pitches'];
+    const countingCells = [
+      fmtN(d.bf), fmtN(d.k), fmtN(d.bb), fmtN(d.hr), fmtN(d.er),
+      fmtN(d.whiffs), fmtN(d.strikes), fmtN(d.balls), fmt2(d.ip), fmtN(d.total_pitches),
+    ];
+    const qualityHeaders = ['ERA','K%','BB%','Strike%','Swing%','Whiff%','Contact%','Z-Swing%','Z-Contact%','Chase%'];
+    const qualityCells = [
+      `<span style="color:${splitsStatColor('era', d.era)};font-weight:700">${fmt2(d.era)}</span>`,
+      fmtPct(d.k_pct), fmtPct(d.bb_pct), fmtPct(d.strike_pct),
+      fmtPct(d.swing_pct), fmtPct(d.whiff_pct), fmtPct(d.contact_pct),
+      fmtPct(d.zone_swing_pct), fmtPct(d.zone_contact_pct), fmtPct(d.chase_pct),
+    ];
+    return buildTable(countingHeaders, countingCells) + buildTable(qualityHeaders, qualityCells);
+  }
+
+  const traditionalHeaders = ['PA','AB','H','2B','HR','K','BB','AVG','SLG','K%','BB%'];
+  const traditionalCells = [
+    fmtN(d.pa), fmtN(d.ab), fmtN(d.h), fmtN(d.doubles), fmtN(d.hr), fmtN(d.k), fmtN(d.bb),
+    `<span style="color:${splitsStatColor('avg', d.avg)};font-weight:700">${fmt3(d.avg)}</span>`,
+    `<span style="color:${splitsStatColor('slg', d.slg)};font-weight:700">${fmt3(d.slg)}</span>`,
+    fmtPct(d.k_pct), fmtPct(d.bb_pct),
+  ];
+  const pitchHeaders = ['Pitches','Swing%','Whiff%','Contact%','Z-Swing%','Z-Contact%','Chase%'];
+  const pitchCells = [
+    fmtN(d.total_pitches), fmtPct(d.swing_pct), fmtPct(d.whiff_pct), fmtPct(d.contact_pct),
+    fmtPct(d.zone_swing_pct), fmtPct(d.zone_contact_pct), fmtPct(d.chase_pct),
+  ];
+  return buildTable(traditionalHeaders, traditionalCells) + buildTable(pitchHeaders, pitchCells);
+}
+
 // ── HITTER PROFILE ────────────────────────────────────────────────────────────
 const PITCH_GROUP_COLORS = {
   'Hard': '#d93025',
@@ -3391,13 +3582,6 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
       </div>
     </div>`;
 
-  // Store for tab switching
-  window._hitterPercentilesData = percs;
-  window._hitterMetricsTab = 'lhp';
-
-  const swingRatesLhp = percs?.swing_rates_lhp || {};
-  const swingRatesRhp = percs?.swing_rates_rhp || {};
-
   // ── SWING RATES TABLE (3 rows: Total / Vs LHP / Vs RHP) ──────────────────────
   function swingRow(label, srS, srF, srL) {
     function tri(sv, fv, lv, fmt) {
@@ -3453,45 +3637,13 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
       </div>
     </div>` : '';
 
-  // ── PITCH METRICS (Vs LHP | Vs RHP tabs) ─────────────────────────────────────
-  function buildMBar(label, value, ref_key, invert=false) {
-    const ref = percs?.percentiles?.[ref_key] || {};
-    const mn = ref.min, mx = ref.max;
-    let pct = 50;
-    if (value != null && mn != null && mx != null && mx !== mn) {
-      pct = (value - mn) / (mx - mn) * 100;
-      if (invert) pct = 100 - pct;
-      pct = Math.max(0, Math.min(100, Math.round(pct * 10) / 10));
-    }
-    return { label, value, min: mn, max: mx, percentile: pct };
-  }
-  function hitterInitialBars(sr) {
-    if (!sr || !sr.total_pitches) return '<div style="color:#888;font-size:12px;padding:8px">No data</div>';
-    return [
-      buildMBar('Swing%', sr.swing_pct, 'swing_pct'),
-      buildMBar('Contact%', sr.contact_pct, 'contact_pct'),
-      buildMBar('Whiff%', sr.whiff_pct, 'whiff_pct', true),
-      buildMBar('Chase%', sr.chase_pct, 'chase_pct', true),
-      buildMBar('Backwards Helmet%', sr.backwards_helmet_pct, 'backwards_helmet'),
-    ].map(m => renderPercentileBar(m)).join('');
-  }
-  function hmTabBtn(id, label, active) {
-    return `<button id="${id}" onclick="setHitterMetricsTab('${id.split('-').pop()}')"
-      style="padding:5px 12px;border-radius:4px;border:1px solid ${active?'#1a3a5c':'#d0d0d0'};
-      background:${active?'#1a3a5c':'#fff'};color:${active?'white':'#555'};
-      font-size:12px;font-weight:600;cursor:pointer;font-family:Courier New">${label}</button>`;
-  }
-  const pitchMetricsHTML = percs ? `
+  // ── SPLITS GENERATOR ────────────────────────────────────────────────────────
+  const splitsGeneratorHTML = `
     <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;padding:16px 20px;margin-bottom:16px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px">
-        <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;color:#1a3a5c">Pitch Metrics</div>
-        <div style="display:flex;gap:3px">
-          ${hmTabBtn('hm-tab-lhp','Vs LHP',true)}
-          ${hmTabBtn('hm-tab-rhp','Vs RHP',false)}
-        </div>
-      </div>
-      <div id="hitter-metrics-bars">${hitterInitialBars(swingRatesLhp)}</div>
-    </div>` : '';
+      <div style="font-family:'Times New Roman',serif;font-size:15px;font-weight:700;color:#1a3a5c;margin-bottom:12px">Splits Generator</div>
+      <div id="splits-filters-hitter"></div>
+      <div id="splits-table-hitter" style="margin-top:12px"></div>
+    </div>`;
 
   // ── PITCH GROUP PERFORMANCE (last 14 days) ───────────────────────────────────
   const hittingWellTable = hitting_well.length ? `
@@ -3762,11 +3914,12 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
   const juicedSection = renderJuicedBreakdown(juicedData);
 
   document.getElementById('hitter-content').innerHTML =
-    header + swingRatesHTML + pitchMetricsHTML + zoneSection + splitsSection + gameLogSection;
+    header + swingRatesHTML + splitsGeneratorHTML + zoneSection + splitsSection + gameLogSection;
 
   window._hitterZones = zones;
   renderZoneGrid('zone-grid-season', zones.season || {}, 'hard_hit_pct');
   renderZoneGrid('zone-grid-14', zones.last_14 || {}, 'hard_hit_pct');
+  initSplitsFilters('hitter', data.batter_id);
 }
 
 function setHitterGroupSplitsTab(tab) {

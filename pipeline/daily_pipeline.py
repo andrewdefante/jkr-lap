@@ -155,6 +155,10 @@ def run_fetch_bbref():
     _run_script("BBref WAR/OPS+/PA fetch", "/pipeline/mlb/fetch_bbref.py",
                 ["--season", "2026"])
 
+def run_build_player_map():
+    _run_script("Player ID Map Update", "/pipeline/mlb/build_player_map.py",
+                ["--update-missing"])
+
 
 def run_send_integrity_email(pipeline_log: list = None, pa_results: dict = None):
     """Send data integrity email with pipeline run log and PA validation results."""
@@ -453,6 +457,7 @@ def run_mlb_morning():
     tracked("Status Update", run_update_statuses)
     tracked("MLB Fetch", run_mlb_daily)
     tracked("BBref Fetch", run_fetch_bbref)
+    tracked("Player ID Map", run_build_player_map)
     pa_results = tracked("PA Validation", run_pa_validation)
     tracked("Fangraphs", run_fangraphs_daily)
     tracked("BAPV+", run_compute_bapv)
@@ -576,7 +581,7 @@ def main():
                  "splits", "workload", "scores", "game-scores", "calibration",
                  "weather", "runners", "kalshi", "actuals", "homepage",
                  "batter-tendencies", "daily-projections", "lineups",
-                 "update-status", "team-defense", "nascar", "f1", "integrity", "all"],
+                 "update-status", "team-defense", "nascar", "f1", "integrity", "player-map", "all"],
         help="Run a specific pipeline immediately instead of scheduling",
     )
     args = parser.parse_args()
@@ -629,6 +634,8 @@ def main():
             run_build_calibration()
         if args.now in ("game-scores", "all"):
             run_build_game_projections()
+        if args.now in ("player-map", "all"):
+            run_build_player_map()
         if args.now in ("integrity", "all"):
             run_integrity_check()
         if args.now in ("homepage", "all"):

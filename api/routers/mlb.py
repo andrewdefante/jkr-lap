@@ -403,11 +403,20 @@ def pitcher_season_comparison(
             fg_row = db.execute(fg_sql, {"pid": pitcher_id, "season": 2025}).mappings().first()
 
         box_sql = text("""
-            SELECT SUM(bp.strikeouts) as season_k,
-                   SUM(bp.walks) as season_bb,
-                   SUM(bp.innings_pitched) as ip,
-                   SUM(bp.games_started) as gs,
-                   COUNT(*) as g
+            SELECT
+                SUM(bp.strikeouts) as season_k,
+                SUM(bp.walks) as season_bb,
+                -- IP = outs / 3 (decimal). Summing the stored innings_pitched column
+                -- directly is wrong: it's stored in baseball notation per game
+                -- (6.2 = 6 2/3 innings), and 6.2 + 6.2 summed as plain decimals
+                -- gives 13.4, not the correct 13.1 (13 1/3).
+                ROUND(SUM(bp.outs)::numeric / 3, 2) as ip,
+                SUM(bp.games_started) as gs,
+                COUNT(*) as g,
+                ROUND(SUM(bp.earned_runs)::numeric / NULLIF(SUM(bp.outs)::numeric / 3, 0) * 9, 2) as era,
+                ROUND((SUM(bp.walks) + SUM(bp.hits))::numeric / NULLIF(SUM(bp.outs)::numeric / 3, 0), 2) as whip,
+                ROUND(SUM(bp.strikeouts)::numeric / NULLIF(SUM(bp.batters_faced), 0) * 100, 1) as k_pct,
+                ROUND(SUM(bp.walks)::numeric / NULLIF(SUM(bp.batters_faced), 0) * 100, 1) as bb_pct
             FROM mlb.boxscore_pitching bp
             JOIN mlb.games g ON g.game_pk = bp.game_pk
             WHERE bp.player_id = :pid AND g.season = 2026 AND g.game_type = 'R'
@@ -425,12 +434,18 @@ def pitcher_season_comparison(
 
         headshot_url = f"https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_213,q_auto:best/v1/people/{pitcher_id}/headshot/67/current"
 
-        # Merge fg_stats with bbref era_plus (bbref is source of truth for 2026)
+        # Merge fg_stats with bbref era_plus (bbref is source of truth for 2026),
+        # and override era/whip with our own boxscore-computed values — FanGraphs
+        # is no longer the source of truth for these, only for fip/xera/siera/war.
         fg_merged = safe_row(fg_row) if fg_row else {}
         if bbref and bbref["era_plus"] is not None:
             fg_merged["era_plus"] = float(bbref["era_plus"])
         if bbref and bbref["bbref_war"] is not None:
             fg_merged["war"] = float(bbref["bbref_war"])
+        if box_row and box_row["era"] is not None:
+            fg_merged["era"] = float(box_row["era"])
+        if box_row and box_row["whip"] is not None:
+            fg_merged["whip"] = float(box_row["whip"])
 
         pk_sql = text("""
             SELECT ROUND(pk_plus::numeric,1) as pk_plus,
@@ -462,9 +477,11 @@ def pitcher_season_comparison(
             "fg_stats": fg_merged,
             "season_k": int(box_row["season_k"]) if box_row and box_row["season_k"] else None,
             "season_bb": int(box_row["season_bb"]) if box_row and box_row["season_bb"] else None,
-            "season_ip": round(float(box_row["ip"]), 1) if box_row and box_row["ip"] else None,
+            "season_ip": float(box_row["ip"]) if box_row and box_row["ip"] else None,
             "season_gs": int(box_row["gs"]) if box_row and box_row["gs"] else None,
             "season_g": int(box_row["g"]) if box_row and box_row["g"] else None,
+            "season_k_pct": float(box_row["k_pct"]) if box_row and box_row["k_pct"] is not None else None,
+            "season_bb_pct": float(box_row["bb_pct"]) if box_row and box_row["bb_pct"] is not None else None,
             "headshot_url": headshot_url,
         }
 
@@ -2948,8 +2965,10 @@ def hitter_profile(batter_id: int, season: int = 2026, db: Session = Depends(get
         SELECT
             COUNT(DISTINCT bb.game_pk) as g,
             SUM(bb.at_bats) as ab,
-            SUM(bb.at_bats) + COALESCE(SUM(bb.walks),0) + COALESCE(SUM(bb.hit_by_pitch),0) +
-                COALESCE(SUM(bb.sac_flies),0) + COALESCE(SUM(bb.sac_bunts),0) as pa,
+            -- plate_appearances is populated straight from GUMBO's own official
+            -- PA count, which covers reached-on-error/catcher's-interference
+            -- edge cases the AB+BB+HBP+SF+SAC approximation can't.
+            SUM(bb.plate_appearances) as pa,
             SUM(bb.hits) as h,
             SUM(bb.doubles) as doubles,
             SUM(bb.triples) as triples,
@@ -2958,6 +2977,9 @@ def hitter_profile(batter_id: int, season: int = 2026, db: Session = Depends(get
             SUM(bb.runs) as r,
             SUM(bb.strikeouts) as k,
             SUM(bb.walks) as bb,
+            SUM(bb.intentional_walks) as ibb,
+            SUM(bb.stolen_bases) as sb,
+            SUM(bb.caught_stealing) as cs,
             SUM(bb.total_bases) as tb,
             ROUND(SUM(bb.hits)::numeric / NULLIF(SUM(bb.at_bats), 0), 3) as avg,
             ROUND(
@@ -2972,12 +2994,8 @@ def hitter_profile(batter_id: int, season: int = 2026, db: Session = Depends(get
                     COALESCE(SUM(bb.hit_by_pitch),0) + COALESCE(SUM(bb.sac_flies),0), 0) +
                 SUM(bb.total_bases)::numeric / NULLIF(SUM(bb.at_bats), 0)
             , 3) as ops,
-            ROUND(
-                SUM(bb.strikeouts)::numeric /
-                NULLIF(SUM(bb.at_bats) + COALESCE(SUM(bb.walks),0) +
-                    COALESCE(SUM(bb.hit_by_pitch),0) + COALESCE(SUM(bb.sac_flies),0) +
-                    COALESCE(SUM(bb.sac_bunts),0), 0) * 100
-            , 1) as k_pct
+            ROUND(SUM(bb.strikeouts)::numeric / NULLIF(SUM(bb.plate_appearances), 0) * 100, 1) as k_pct,
+            ROUND(SUM(bb.walks)::numeric / NULLIF(SUM(bb.plate_appearances), 0) * 100, 1) as bb_pct
         FROM mlb.boxscore_batting bb
         JOIN mlb.games g ON g.game_pk = bb.game_pk
         WHERE bb.player_id = :bid

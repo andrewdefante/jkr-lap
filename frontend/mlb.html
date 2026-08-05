@@ -1424,6 +1424,18 @@ function renderModelScores(data) {
 function norm(s) { return s.normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
 function esc(s) { return (s||'').replace(/'/g,"\\'"); }
 
+// Convert decimal innings (outs/3, e.g. 123.67) back to baseball notation
+// (123.2 = 123 and 2/3 innings) for display.
+function formatIP(decimalIP) {
+  const full = Math.floor(decimalIP);
+  const remainder = decimalIP - full;
+  let outs;
+  if (remainder < 0.17) outs = 0;
+  else if (remainder < 0.5) outs = 1;
+  else outs = 2;
+  return outs === 0 ? `${full}` : `${full}.${outs}`;
+}
+
 function scoreColor(v) {
   if (v == null) return 'var(--gray-400)';
   if (v >= 130) return 'var(--score-elite)';
@@ -2173,7 +2185,7 @@ function renderProfile(data, pitcherId, countsFull={}, percentilesData=null, gro
           <div style="font-family:'Courier New',monospace;font-size:14px;color:#1a1a1a;margin-bottom:6px">
             ${data.season_gs != null ? `<strong>${data.season_gs}</strong> <span style="color:#888;font-size:12px">GS</span> / ` : ''}
             ${data.season_g != null ? `<strong>${data.season_g}</strong> <span style="color:#888;font-size:12px">G</span> / ` : ''}
-            ${data.season_ip != null ? `<strong>${data.season_ip}</strong> <span style="color:#888;font-size:12px">IP</span> / ` : ''}
+            ${data.season_ip != null ? `<strong>${formatIP(data.season_ip)}</strong> <span style="color:#888;font-size:12px">IP</span> / ` : ''}
             ${eraPlus != null ? `<strong style="color:${eraPlusColor}">${Math.round(eraPlus)}</strong> <span style="color:#888;font-size:12px">ERA+</span> / ` : ''}
             ${fg.era != null ? `<strong>${Number(fg.era).toFixed(2)}</strong> <span style="color:#888;font-size:12px">ERA</span>` : ''}
           </div>

@@ -454,6 +454,29 @@ def _line_80(proj_ks: float | None) -> int | None:
     return max(1, round(proj_ks - 1.28 * (proj_ks ** 0.5)))
 
 
+def get_team_k_rates(db, season: int = 2026) -> dict:
+    """
+    Returns dict of team_abbrev -> k_pct (as %)
+    K% = SUM(strikeouts) / SUM(plate_appearances) for all batters on that team
+    """
+    rows = db.execute(text("""
+        SELECT
+            CASE WHEN g.home_team_id = bb.team_id
+                 THEN g.home_team_abbrev
+                 ELSE g.away_team_abbrev END as team_abbrev,
+            ROUND(SUM(bb.strikeouts)::numeric /
+                  NULLIF(SUM(bb.plate_appearances), 0) * 100, 1) as k_pct
+        FROM mlb.boxscore_batting bb
+        JOIN mlb.games g ON g.game_pk = bb.game_pk
+        WHERE g.season = :season
+        AND g.game_type = 'R'
+        AND bb.plate_appearances > 0
+        GROUP BY 1
+        ORDER BY k_pct DESC
+    """), {"season": season}).mappings().all()
+    return {r['team_abbrev']: float(r['k_pct']) for r in rows}
+
+
 def get_today_outlook(today: date, db) -> dict:
     raw_pitchers = db.execute(text("""
         SELECT
@@ -467,12 +490,9 @@ def get_today_outlook(today: date, db) -> dict:
             dp.proj_ks_f5,
             COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj_ks_locked,
             dp.proj_ks_locked IS NOT NULL as has_locked_proj,
-            ROUND(g3.goose3_plus::numeric,1) as goose3_plus,
             ROUND(pk.pk_plus::numeric,1)     as pk_plus,
             ROUND(phr.phr_plus::numeric,1)   as phr_plus
         FROM mlb.daily_projections dp
-        LEFT JOIN mlb.goose3_overall g3
-            ON g3.pitcher_id = dp.pitcher_id AND g3.season = 2026
         LEFT JOIN mlb.pk_overall pk
             ON pk.pitcher_id = dp.pitcher_id AND pk.season = 2026
         LEFT JOIN mlb.phr_overall phr
@@ -483,6 +503,7 @@ def get_today_outlook(today: date, db) -> dict:
 
     variance_data = get_pitcher_k_variance(db)
     pitcher_record_data, team_record_data = get_pitcher_records(db, today)
+    team_k_rates = get_team_k_rates(db)
 
     pitchers = []
     for p in raw_pitchers:
@@ -490,6 +511,7 @@ def get_today_outlook(today: date, db) -> dict:
         proj_ks      = float(row.get('proj_ks_6inn') or 0)
         proj_ks_lock = float(row.get('proj_ks_locked') or proj_ks)
         pitcher_id   = row.get('pitcher_id')
+        row['opp_k_pct'] = team_k_rates.get(row.get('opp_abbrev'))
 
         # Confidence score 0-100
         pv = variance_data.get(pitcher_id, {'std_k': 2.5, 'starts': 0})
@@ -676,6 +698,12 @@ def render_homepage(yesterday: date, today: date, db) -> str:
         if val >= 102: return '#2e7d32'
         if val >= 95:  return '#e65100'
         return '#b71c1c'
+
+    def opp_k_pct_color(val):
+        if val is None: return '#888'
+        if val > 24: return '#1b5e20'
+        if val < 20: return '#b71c1c'
+        return '#1a1a1a'
 
     def pct_diff_color(today_val, league_val):
         try:
@@ -950,7 +978,9 @@ def render_homepage(yesterday: date, today: date, db) -> str:
             <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'p_vs_proj')}</td>
             <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'opp_vs_line')}</td>
             <td style="padding:4px 8px;text-align:right;color:#555">{line_80 if line_80 is not None else '—'}</td>
-            <td style="padding:4px 8px;text-align:right;color:{score_color(p.get('goose3_plus'))}">{p.get('goose3_plus','—')}</td>
+            <td style="padding:4px 8px;text-align:right;color:{opp_k_pct_color(p.get('opp_k_pct'))}">
+                {f"{p.get('opp_k_pct'):.1f}%" if p.get('opp_k_pct') is not None else '—'}
+            </td>
             <td style="padding:4px 8px;text-align:right;color:{score_color(p.get('pk_plus'))}">{p.get('pk_plus','—')}</td>
             <td style="padding:4px 8px;text-align:right">{_proj_ks_display(p)}</td>
             <td style="padding:4px 8px;text-align:right;color:#888">
@@ -1252,7 +1282,7 @@ def render_homepage(yesterday: date, today: date, db) -> str:
         <th>P vs PROJ</th>
         <th>OPP vs LINE</th>
         <th>80% LINE</th>
-        <th>Goose+3</th><th>pK+</th><th>PROJ Ks</th><th>F5 Ks</th>
+        <th>OPP K%</th><th>pK+</th><th>PROJ Ks</th><th>F5 Ks</th>
     </tr></thead>
     <tbody>{pitcher_rows if pitcher_rows else
         '<tr><td colspan="9" style="padding:8px;color:#888">No pitcher projections for today yet.</td></tr>'
@@ -1265,6 +1295,7 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     OPP vs LINE = opposing team's batter W-L vs our 80% line ·
     W = pitcher stayed under line (good for batters) · L = pitcher exceeded line ·
     80% LINE = K total our model projects with ≥80% confidence ·
+    OPP K% = opposing team's season strikeout rate (all batters) ·
     PROJ Ks = full outing projection · F5 Ks = first 5 innings only ·
     * = updated since first projection · (x.x) = original pre-game locked value
 </div>

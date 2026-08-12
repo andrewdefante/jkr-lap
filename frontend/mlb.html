@@ -3351,8 +3351,10 @@ async function loadSplitsGenerator(playerType, playerId) {
   }
 }
 
-function renderSplitsTable(playerType, d) {
-  const noData = playerType === 'hitter' ? (d.pa == null) : (d.bf == null);
+function renderSplitsTable(playerType, resp) {
+  const sel = resp.selected || {};
+  const seas = resp.season || {};
+  const noData = playerType === 'hitter' ? (sel.pa == null) : (sel.bf == null);
   if (noData) {
     return `<div class="state-box" style="padding:20px"><div class="state-text">No data for selected filters</div></div>`;
   }
@@ -3361,6 +3363,13 @@ function renderSplitsTable(playerType, d) {
   const fmt3  = v => v != null ? Number(v).toFixed(3) : '—';
   const fmt2  = v => v != null ? Number(v).toFixed(2) : '—';
   const fmtN  = v => v != null ? v : '—';
+
+  // season value rendered smaller/lighter in parens after the selected value
+  const seasonSpan = str => `<span style="color:#999;font-size:11px;margin-left:3px">(${str})</span>`;
+  const pair = (selVal, seasVal, fmt) => `${fmt(selVal)}${seasonSpan(fmt(seasVal))}`;
+  const pairColored = (selVal, seasVal, fmt, statKey) =>
+    `<span style="color:${splitsStatColor(statKey, selVal)};font-weight:700">${fmt(selVal)}</span>${seasonSpan(fmt(seasVal))}`;
+  const seasonCaption = `<div style="font-size:10px;color:#aaa;font-style:italic;text-align:right;margin:-6px 0 8px">(season value)</div>`;
 
   function buildTable(headers, cells) {
     return `
@@ -3379,32 +3388,36 @@ function renderSplitsTable(playerType, d) {
   if (playerType === 'pitcher') {
     const countingHeaders = ['BF','K','BB','HR','ER','Whiffs','Strikes','Balls','IP','Pitches'];
     const countingCells = [
-      fmtN(d.bf), fmtN(d.k), fmtN(d.bb), fmtN(d.hr), fmtN(d.er),
-      fmtN(d.whiffs), fmtN(d.strikes), fmtN(d.balls), fmt2(d.ip), fmtN(d.total_pitches),
+      pair(sel.bf, seas.bf, fmtN), pair(sel.k, seas.k, fmtN), pair(sel.bb, seas.bb, fmtN),
+      pair(sel.hr, seas.hr, fmtN), pair(sel.er, seas.er, fmtN),
+      pair(sel.whiffs, seas.whiffs, fmtN), pair(sel.strikes, seas.strikes, fmtN),
+      pair(sel.balls, seas.balls, fmtN), pair(sel.ip, seas.ip, fmt2), pair(sel.total_pitches, seas.total_pitches, fmtN),
     ];
     const qualityHeaders = ['ERA','K%','BB%','Strike%','Swing%','Whiff%','Contact%','Z-Swing%','Z-Contact%','Chase%'];
     const qualityCells = [
-      `<span style="color:${splitsStatColor('era', d.era)};font-weight:700">${fmt2(d.era)}</span>`,
-      fmtPct(d.k_pct), fmtPct(d.bb_pct), fmtPct(d.strike_pct),
-      fmtPct(d.swing_pct), fmtPct(d.whiff_pct), fmtPct(d.contact_pct),
-      fmtPct(d.zone_swing_pct), fmtPct(d.zone_contact_pct), fmtPct(d.chase_pct),
+      pairColored(sel.era, seas.era, fmt2, 'era'),
+      pair(sel.k_pct, seas.k_pct, fmtPct), pair(sel.bb_pct, seas.bb_pct, fmtPct), pair(sel.strike_pct, seas.strike_pct, fmtPct),
+      pair(sel.swing_pct, seas.swing_pct, fmtPct), pair(sel.whiff_pct, seas.whiff_pct, fmtPct), pair(sel.contact_pct, seas.contact_pct, fmtPct),
+      pair(sel.zone_swing_pct, seas.zone_swing_pct, fmtPct), pair(sel.zone_contact_pct, seas.zone_contact_pct, fmtPct), pair(sel.chase_pct, seas.chase_pct, fmtPct),
     ];
-    return buildTable(countingHeaders, countingCells) + buildTable(qualityHeaders, qualityCells);
+    return buildTable(countingHeaders, countingCells) + buildTable(qualityHeaders, qualityCells) + seasonCaption;
   }
 
   const traditionalHeaders = ['PA','AB','H','2B','HR','K','BB','AVG','SLG','K%','BB%'];
   const traditionalCells = [
-    fmtN(d.pa), fmtN(d.ab), fmtN(d.h), fmtN(d.doubles), fmtN(d.hr), fmtN(d.k), fmtN(d.bb),
-    `<span style="color:${splitsStatColor('avg', d.avg)};font-weight:700">${fmt3(d.avg)}</span>`,
-    `<span style="color:${splitsStatColor('slg', d.slg)};font-weight:700">${fmt3(d.slg)}</span>`,
-    fmtPct(d.k_pct), fmtPct(d.bb_pct),
+    pair(sel.pa, seas.pa, fmtN), pair(sel.ab, seas.ab, fmtN), pair(sel.h, seas.h, fmtN),
+    pair(sel.doubles, seas.doubles, fmtN), pair(sel.hr, seas.hr, fmtN), pair(sel.k, seas.k, fmtN), pair(sel.bb, seas.bb, fmtN),
+    pairColored(sel.avg, seas.avg, fmt3, 'avg'),
+    pairColored(sel.slg, seas.slg, fmt3, 'slg'),
+    pair(sel.k_pct, seas.k_pct, fmtPct), pair(sel.bb_pct, seas.bb_pct, fmtPct),
   ];
   const pitchHeaders = ['Pitches','Swing%','Whiff%','Contact%','Z-Swing%','Z-Contact%','Chase%'];
   const pitchCells = [
-    fmtN(d.total_pitches), fmtPct(d.swing_pct), fmtPct(d.whiff_pct), fmtPct(d.contact_pct),
-    fmtPct(d.zone_swing_pct), fmtPct(d.zone_contact_pct), fmtPct(d.chase_pct),
+    pair(sel.total_pitches, seas.total_pitches, fmtN),
+    pair(sel.swing_pct, seas.swing_pct, fmtPct), pair(sel.whiff_pct, seas.whiff_pct, fmtPct), pair(sel.contact_pct, seas.contact_pct, fmtPct),
+    pair(sel.zone_swing_pct, seas.zone_swing_pct, fmtPct), pair(sel.zone_contact_pct, seas.zone_contact_pct, fmtPct), pair(sel.chase_pct, seas.chase_pct, fmtPct),
   ];
-  return buildTable(traditionalHeaders, traditionalCells) + buildTable(pitchHeaders, pitchCells);
+  return buildTable(traditionalHeaders, traditionalCells) + buildTable(pitchHeaders, pitchCells) + seasonCaption;
 }
 
 // ── HITTER PROFILE ────────────────────────────────────────────────────────────
@@ -3549,7 +3562,6 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
   const juicedData = data.juiced_plus || {};
   const overallJuiced = juicedData.overall;
   const percJuiced = percs?.juiced || {};
-  const swingRates = percs?.swing_rates || {};
   const headshot = percs?.headshot_url || `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_213,q_auto:best/v1/people/${data.batter_id}/headshot/67/current`;
 
   const juicedVal = percJuiced.juiced_plus ?? overallJuiced;
@@ -3593,61 +3605,6 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
           onerror="this.style.display='none'">
       </div>
     </div>`;
-
-  // ── SWING RATES TABLE (3 rows: Total / Vs LHP / Vs RHP) ──────────────────────
-  function swingRow(label, srS, srF, srL) {
-    function tri(sv, fv, lv, fmt) {
-      return `<div style="line-height:1.6">
-        <span style="font-family:Courier New;font-size:12px;color:#1a1a1a">${sv != null ? fmt(sv) : '—'}</span>
-        <span style="color:#bbb;font-size:11px"> / </span>
-        <span style="font-family:Courier New;font-size:12px;color:#444">${fv != null ? fmt(fv) : '—'}</span>
-        <span style="color:#bbb;font-size:11px"> / </span>
-        <span style="font-family:Courier New;font-size:12px;color:#777">${lv != null ? fmt(lv) : '—'}</span>
-      </div>`;
-    }
-    const bh = srS?.backwards_helmet_pct;
-    const bhF = srF?.backwards_helmet_pct;
-    const bhL = srL?.backwards_helmet_pct;
-    const bhC = bh > 5 ? '#1b5e20' : bh < -5 ? '#b71c1c' : '#1a1a1a';
-    const fmtBH = v => (v > 0 ? '+' : '') + v + '%';
-    return `<tr style="border-bottom:1px solid #e8e8e8">
-      <td style="padding:9px 14px;font-family:Courier New;font-size:13px;font-weight:600;color:#333;white-space:nowrap">${label}</td>
-      <td style="padding:9px 12px;text-align:right">${tri(srS?.total_pitches, srF?.total_pitches, null, v=>v)}</td>
-      <td style="padding:9px 12px;text-align:right;font-family:Courier New;font-size:13px;color:#aaa">—</td>
-      <td style="padding:9px 12px;text-align:right">${tri(srS?.swing_pct, srF?.swing_pct, srL?.swing_pct, v=>v+'%')}</td>
-      <td style="padding:9px 12px;text-align:right">${tri(srS?.contact_pct, srF?.contact_pct, srL?.contact_pct, v=>v+'%')}</td>
-      <td style="padding:9px 12px;text-align:right">${tri(srS?.whiff_pct, srF?.whiff_pct, srL?.whiff_pct, v=>v+'%')}</td>
-      <td style="padding:9px 12px;text-align:right">${tri(srS?.zone_contact_pct, srF?.zone_contact_pct, srL?.zone_contact_pct, v=>v+'%')}</td>
-      <td style="padding:9px 12px;text-align:right">${tri(srS?.chase_pct, srF?.chase_pct, srL?.chase_pct, v=>v+'%')}</td>
-      <td style="padding:9px 12px;text-align:right;font-weight:700;color:${bhC}">${tri(bh, bhF, bhL, fmtBH)}</td>
-    </tr>`;
-  }
-
-  const swingRatesHTML = percs ? `
-    <div style="background:#fff;border:1px solid #e0e0e0;border-radius:8px;margin-bottom:16px;overflow:hidden">
-      <div style="padding:10px 16px 8px;border-bottom:1px solid #f0f0f0;font-size:10px;color:#888;font-style:italic;text-align:right">
-        <span style="color:#1a1a1a;font-weight:600">2026 Season</span>
-        <span style="color:#bbb"> / </span><span style="color:#444">Last 14 Days</span>
-        <span style="color:#bbb"> / </span><span style="color:#777">League Avg</span>
-      </div>
-      <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;min-width:760px">
-          <thead><tr style="background:#1a1a1a;color:white">
-            ${['Pitcher Hand','Total Pitches','Juiced+','Swing%','Contact%','Whiff%','Zone Contact%','Chase%','Backwards Helmet%'].map((h,i) =>
-              `<th style="padding:9px ${i===0?'14':'12'}px;text-align:${i===0?'left':'right'};font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;white-space:nowrap">${h}</th>`
-            ).join('')}
-          </tr></thead>
-          <tbody>
-            ${swingRow('Total',  percs.swing_rates||{},     percs.swing_rates_14||{},     percs.swing_rates_lg||{})}
-            ${swingRow('Vs LHP', percs.swing_rates_lhp||{}, percs.swing_rates_lhp_14||{}, percs.swing_rates_lg_lhp||{})}
-            ${swingRow('Vs RHP', percs.swing_rates_rhp||{}, percs.swing_rates_rhp_14||{}, percs.swing_rates_lg_rhp||{})}
-          </tbody>
-        </table>
-      </div>
-      <div style="padding:7px 14px;font-size:10px;color:#aaa;font-style:italic;border-top:1px solid #f0f0f0">
-        ※ Backwards Helmet% = swing rate in hitter's counts minus swing rate in pitcher's counts · Juiced+ split data not available
-      </div>
-    </div>` : '';
 
   // ── SPLITS GENERATOR ────────────────────────────────────────────────────────
   const splitsGeneratorHTML = `
@@ -3926,7 +3883,7 @@ function renderHitterProfile(data, percs=null, juicedSplits=null) {
   const juicedSection = renderJuicedBreakdown(juicedData);
 
   document.getElementById('hitter-content').innerHTML =
-    header + swingRatesHTML + splitsGeneratorHTML + zoneSection + splitsSection + gameLogSection;
+    header + splitsGeneratorHTML + zoneSection + splitsSection + gameLogSection;
 
   window._hitterZones = zones;
   renderZoneGrid('zone-grid-season', zones.season || {}, 'hard_hit_pct');

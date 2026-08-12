@@ -5911,7 +5911,7 @@ def hitter_splits(
             JOIN mlb.games g ON g.game_pk = ab.game_pk
             WHERE ab.batter_id = :batter_id
             AND ab.event_type IN {_PA_EVENT_TYPES}
-            AND g.game_date BETWEEN :date_from AND :date_to
+            AND (:apply_date_filter = false OR g.game_date BETWEEN :date_from AND :date_to)
             AND g.season = 2026
             AND g.game_type = 'R'
             AND (:pitcher_hand = 'both' OR ab.pitch_hand = :pitcher_hand)
@@ -5938,7 +5938,7 @@ def hitter_splits(
             JOIN mlb.games g ON g.game_pk = p.game_pk
             JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk AND ab.at_bat_index = p.at_bat_index
             WHERE p.batter_id = :batter_id
-            AND g.game_date BETWEEN :date_from AND :date_to
+            AND (:apply_date_filter = false OR g.game_date BETWEEN :date_from AND :date_to)
             AND g.season = 2026
             AND g.game_type = 'R'
             AND (:pitcher_hand = 'both' OR ab.pitch_hand = :pitcher_hand)
@@ -5964,7 +5964,7 @@ def hitter_splits(
         FROM box_agg b, pitch_agg p
     """)
 
-    row = db.execute(sql, {
+    params = {
         "batter_id": batter_id,
         "date_from": date_from,
         "date_to": date_to,
@@ -5972,9 +5972,14 @@ def hitter_splits(
         "side": side,
         "pitch_type": pitch_type,
         "pitcher_id": pitcher_id,
-    }).mappings().first()
+    }
+    selected_row = db.execute(sql, {**params, "apply_date_filter": True}).mappings().first()
+    season_row = db.execute(sql, {**params, "apply_date_filter": False}).mappings().first()
 
-    return dict(row) if row else {}
+    return {
+        "selected": dict(selected_row) if selected_row else {},
+        "season": dict(season_row) if season_row else {},
+    }
 
 
 @router.get("/pitcher/{pitcher_id}/splits")
@@ -6016,7 +6021,7 @@ def pitcher_splits(
             JOIN mlb.games g ON g.game_pk = ab.game_pk
             WHERE ab.pitcher_id = :pitcher_id
             AND ab.event_type IN {_PA_EVENT_TYPES}
-            AND g.game_date BETWEEN :date_from AND :date_to
+            AND (:apply_date_filter = false OR g.game_date BETWEEN :date_from AND :date_to)
             AND g.season = 2026
             AND g.game_type = 'R'
             AND (:batter_hand = 'both' OR ab.bat_side = :batter_hand)
@@ -6035,7 +6040,7 @@ def pitcher_splits(
             FROM mlb.boxscore_pitching bp
             JOIN mlb.games g ON g.game_pk = bp.game_pk
             WHERE bp.player_id = :pitcher_id
-            AND g.game_date BETWEEN :date_from AND :date_to
+            AND (:apply_date_filter = false OR g.game_date BETWEEN :date_from AND :date_to)
             AND g.season = 2026
             AND g.game_type = 'R'
             AND (:side = 'both'
@@ -6060,7 +6065,7 @@ def pitcher_splits(
             JOIN mlb.games g ON g.game_pk = p.game_pk
             JOIN mlb.at_bats ab ON ab.game_pk = p.game_pk AND ab.at_bat_index = p.at_bat_index
             WHERE p.pitcher_id = :pitcher_id
-            AND g.game_date BETWEEN :date_from AND :date_to
+            AND (:apply_date_filter = false OR g.game_date BETWEEN :date_from AND :date_to)
             AND g.season = 2026
             AND g.game_type = 'R'
             AND (:batter_hand = 'both' OR ab.bat_side = :batter_hand)
@@ -6091,7 +6096,7 @@ def pitcher_splits(
         FROM box_agg b, game_agg ga, pitch_agg p
     """)
 
-    row = db.execute(sql, {
+    params = {
         "pitcher_id": pitcher_id,
         "date_from": date_from,
         "date_to": date_to,
@@ -6099,6 +6104,11 @@ def pitcher_splits(
         "side": side,
         "pitch_type": pitch_type,
         "batter_id": batter_id,
-    }).mappings().first()
+    }
+    selected_row = db.execute(sql, {**params, "apply_date_filter": True}).mappings().first()
+    season_row = db.execute(sql, {**params, "apply_date_filter": False}).mappings().first()
 
-    return dict(row) if row else {}
+    return {
+        "selected": dict(selected_row) if selected_row else {},
+        "season": dict(season_row) if season_row else {},
+    }

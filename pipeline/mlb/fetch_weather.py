@@ -192,8 +192,14 @@ def fetch_weather_for_game(game_pk: int, game_date: str,
         return {"is_indoor": True, "combined_hr_modifier": 1.0}
 
     try:
+        game_date_obj = date.fromisoformat(game_date) if isinstance(game_date, str) else game_date
+        if game_date_obj < date.today():
+            base_url = "https://archive-api.open-meteo.com/v1/archive"
+        else:
+            base_url = "https://api.open-meteo.com/v1/forecast"
+
         r = httpx.get(
-            "https://api.open-meteo.com/v1/forecast",
+            base_url,
             params={
                 "latitude": park['lat'],
                 "longitude": park['lon'],

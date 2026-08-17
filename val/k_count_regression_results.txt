@@ -1,0 +1,83 @@
+====================================================================================================
+OUTRIGHT K COUNT — DESCRIPTIVE STATS
+====================================================================================================
+Rows: 3305
+count    3305.000000
+mean        4.824206
+std         2.479630
+min         0.000000
+25%         3.000000
+50%         5.000000
+75%         6.000000
+max        15.000000
+
+====================================================================================================
+INDIVIDUAL PREDICTOR CORRELATIONS WITH ACTUAL_K (raw count)
+====================================================================================================
+  pitcher_season_k_rate: r=0.4327
+  pitcher_roll_3g_k_rate: r=0.2324
+  opp_season_k_rate: r=0.1492
+  opp_roll_10g_k_rate: r=0.0595
+  pitcher_roll_3g_avg_bf: r=0.2465
+  pitcher_season_avg_bf: r=0.2944
+  naive_proj_k: r=0.5081
+
+MAE of naive projection (season_k_rate x roll_3g_avg_bf) vs actual_k: 1.6936
+
+====================================================================================================
+MODEL COMPARISON: PREDICTING RAW actual_k
+====================================================================================================
+
+--- Model A: rate-only features (no volume) ---
+Train rows: 2932  Test rows: 371  Best alpha: 0.01
+  pitcher_season_k_rate: 23.0826
+  pitcher_roll_3g_k_rate: -2.8969
+  opp_season_k_rate: 23.3213
+  opp_roll_10g_k_rate: -2.6600
+  intercept: 4.8445
+  R² train: 0.2070
+  R² test:  0.2587
+  MAE train: 1.7382
+  MAE test:  1.7179
+
+--- Model B: rate features + pitcher_roll_3g_avg_bf (volume) ---
+Train rows: 2932  Test rows: 371  Best alpha: 0.01
+  pitcher_season_k_rate: 23.1258
+  pitcher_roll_3g_k_rate: -2.5011
+  opp_season_k_rate: 22.2946
+  opp_roll_10g_k_rate: -2.0062
+  pitcher_roll_3g_avg_bf: 0.1610
+  intercept: 4.8445
+  R² train: 0.2724
+  R² test:  0.3151
+  MAE train: 1.6741
+  MAE test:  1.6635
+
+--- Model C: rate features + pitcher_season_avg_bf (volume) ---
+Train rows: 2932  Test rows: 371  Best alpha: 10.0
+  pitcher_season_k_rate: 23.7271
+  pitcher_roll_3g_k_rate: -3.0710
+  opp_season_k_rate: 22.0919
+  opp_roll_10g_k_rate: -1.9394
+  pitcher_season_avg_bf: 0.2340
+  intercept: 4.8445
+  R² train: 0.3068
+  R² test:  0.3146
+  MAE train: 1.6342
+  MAE test:  1.6675
+
+--- Model D: rate features + both volume proxies ---
+Train rows: 2932  Test rows: 371  Best alpha: 0.01
+  pitcher_season_k_rate: 23.9597
+  pitcher_roll_3g_k_rate: -3.2316
+  opp_season_k_rate: 22.2287
+  opp_roll_10g_k_rate: -1.9933
+  pitcher_roll_3g_avg_bf: -0.0230
+  pitcher_season_avg_bf: 0.2578
+  intercept: 4.8445
+  R² train: 0.3072
+  R² test:  0.3116
+  MAE train: 1.6330
+  MAE test:  1.6709
+
+Saved training set to /tmp/k_count_training_set.csv

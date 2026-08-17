@@ -1,0 +1,68 @@
+====================================================================================================
+PART 1 — RIDGE REGRESSION RESULTS
+====================================================================================================
+Training rows: 2932  |  Test rows: 371
+Best alpha: 50.0
+
+Coefficients (unscaled):
+  pitcher_season_k_rate: 1.1564
+  pitcher_roll_3g_k_rate: -0.1851
+  opp_season_k_rate: 0.9191
+  opp_roll_10g_k_rate: -0.0407
+  intercept: 0.2210
+
+R² train: 0.2597
+R² test:  0.2890
+MAE train: 0.0731
+MAE test:  0.0736
+
+Normalized positive weights (for blending):
+  pitcher_season_k_rate: 0.5572
+  pitcher_roll_3g_k_rate: 0.0000
+  opp_season_k_rate: 0.4428
+  opp_roll_10g_k_rate: 0.0000
+
+Individual predictor correlations with actual_k_rate:
+  pitcher_season_k_rate: r=0.4808
+  pitcher_roll_3g_k_rate: r=0.2331
+  opp_season_k_rate: r=0.1518
+  opp_roll_10g_k_rate: r=0.0739
+
+====================================================================================================
+PART 2 — BAYESIAN UPDATING RESULTS
+====================================================================================================
+Prior confidence (BF equivalent): 100
+Observed window: 3 starts (~60.0 BF)
+
+MAE comparison:
+  Season rate alone:    0.0745
+  Roll 3g rate alone:   0.0915
+  Bayesian estimate:    0.0785
+  Bayesian correlation: r=0.3991
+
+=== CONFIDENCE TUNING ===
+  Confidence      MAE        r
+          25   0.0845   0.3053
+          50   0.0813   0.3502
+          75   0.0795   0.3794
+         100   0.0785   0.3991
+         150   0.0772   0.4233
+         200   0.0766   0.4372
+         300   0.0759   0.4520
+         500   0.0753   0.4640
+
+====================================================================================================
+PART 3 — COMBINED MODEL: RIDGE WITH BAYESIAN PITCHER RATE
+====================================================================================================
+Training rows: 2932  |  Test rows: 371
+Best alpha: 5.0
+R² test:  0.2902
+MAE test: 0.0736
+
+Coefficients:
+  bayes_k_rate: 1.8868
+  pitcher_roll_3g_k_rate: -0.9042
+  opp_season_k_rate: 0.9380
+  opp_roll_10g_k_rate: -0.0458
+
+Saved augmented training set to /tmp/k_regression_training_set_v2.csv

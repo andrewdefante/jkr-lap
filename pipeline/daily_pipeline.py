@@ -703,7 +703,7 @@ def main():
 
     # ── MORNING REFRESH ──────────────────────────────────────────────────────
     # 7:00am PT — weather + workload
-    scheduler.add_job(run_fetch_weather, CronTrigger(hour=7, minute=0, timezone=PT),
+    scheduler.add_job(run_fetch_weather, CronTrigger(hour='12,15,18', minute=0, timezone=PT),
         id="weather_morning", name="Weather fetch (7:00am PT)", misfire_grace_time=600)
     scheduler.add_job(run_build_workload, CronTrigger(hour=7, minute=0, timezone=PT),
         id="workload_morning", name="Workload/ACWR rebuild (7:00am PT)", misfire_grace_time=600)

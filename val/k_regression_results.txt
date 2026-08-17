@@ -1,0 +1,27 @@
+Max game_date in data: 2026-08-13 00:00:00
+Holdout cutoff (last 14 days): 2026-07-30 00:00:00
+Training rows: 2932
+Test rows: 371
+
+Coefficients (weights):
+  pitcher_season_k_rate: 1.1959
+  pitcher_roll_3g_k_rate: -0.2054
+  opp_season_k_rate: 0.9398
+  opp_roll_10g_k_rate: -0.0459
+  intercept: -0.1948
+
+R² (train): 0.2599
+R² (test):  0.2908
+MAE (test): 0.0736
+
+=== INDIVIDUAL PREDICTOR CORRELATIONS WITH ACTUAL K RATE ===
+  pitcher_season_k_rate: r=0.4813
+  pitcher_roll_3g_k_rate: r=0.2341
+  opp_season_k_rate: r=0.1525
+  opp_roll_10g_k_rate: r=0.0739
+
+=== RECOMMENDED WEIGHTS (regression coefficients normalized to sum to 1.0) ===
+  pitcher_season_k_rate: 0.6346
+  pitcher_roll_3g_k_rate: -0.1090
+  opp_season_k_rate: 0.4987
+  opp_roll_10g_k_rate: -0.0243

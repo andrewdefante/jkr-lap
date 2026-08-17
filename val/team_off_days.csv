@@ -1,0 +1,4 @@
+psql:/tmp/team_off_days.sql:28: ERROR:  operator does not exist: character varying - character varying
+LINE 23:     (game_date - prev_game_date) as days_since_last_game,
+                        ^
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.

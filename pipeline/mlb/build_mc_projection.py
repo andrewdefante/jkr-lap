@@ -231,8 +231,24 @@ TODAY_SQL = """
         pr3.pitcher_roll_3g_k_rate,
         os.opp_season_k_rate,
         os.opp_season_k_rate as opp_roll_10g_k_rate,
-        pp.pit_park_k_rate,
-        obp.opp_bat_park_k_rate,
+        COALESCE(pp.pit_park_k_rate,
+            (SELECT SUM(bp2.strikeouts)::numeric / NULLIF(SUM(bp2.batters_faced), 0)
+             FROM mlb.boxscore_pitching bp2
+             JOIN mlb.games g2 ON g2.game_pk = bp2.game_pk
+             WHERE g2.season = 2026 AND g2.game_type = 'R'
+             AND g2.game_date < :target_date
+             AND g2.home_team_id = g.home_team_id
+             AND bp2.batters_faced > 0)
+        ) as pit_park_k_rate,
+        COALESCE(obp.opp_bat_park_k_rate,
+            (SELECT SUM(bb2.strikeouts)::numeric / NULLIF(SUM(bb2.plate_appearances), 0)
+             FROM mlb.boxscore_batting bb2
+             JOIN mlb.games g2 ON g2.game_pk = bb2.game_pk
+             WHERE g2.season = 2026 AND g2.game_type = 'R'
+             AND g2.game_date < :target_date
+             AND g2.home_team_id = g.home_team_id
+             AND bb2.plate_appearances > 0)
+        ) as opp_bat_park_k_rate,
         COALESCE(pbf.avg_bf, :league_avg_bf) as avg_bf,
         COALESCE(pbf.std_bf, :league_std_bf) as std_bf
     FROM mlb.daily_projections dp

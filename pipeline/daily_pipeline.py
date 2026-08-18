@@ -415,6 +415,12 @@ def run_daily_projections():
                 ["--date", today])
 
 
+def run_mc_projection():
+    today = datetime.now(PT).strftime("%Y-%m-%d")
+    _run_script("MC K Projection", "/pipeline/mlb/build_mc_projection.py",
+                ["--date", today])
+
+
 def run_fetch_lineups():
     today = datetime.now(PT).strftime("%Y-%m-%d")
     _run_script("Lineup Fetch", "/pipeline/mlb/fetch_lineups.py",
@@ -474,6 +480,7 @@ def run_mlb_morning():
     tracked("Model Scores", run_build_model_scores)
     tracked("Calibration", run_build_calibration)
     tracked("Daily Projections", run_daily_projections)
+    tracked("MC K Projection", run_mc_projection)
 
     run_send_integrity_email(pipeline_log, pa_results)
 
@@ -580,7 +587,7 @@ def main():
                  "goose", "stuff-score", "pk-phr", "juiced2", "goose3",
                  "splits", "workload", "scores", "game-scores", "calibration",
                  "weather", "runners", "kalshi", "actuals", "homepage",
-                 "batter-tendencies", "daily-projections", "lineups",
+                 "batter-tendencies", "daily-projections", "mc-projection", "lineups",
                  "update-status", "team-defense", "nascar", "f1", "integrity", "player-map", "all"],
         help="Run a specific pipeline immediately instead of scheduling",
     )
@@ -644,6 +651,8 @@ def main():
             run_build_batter_tendencies()
         if args.now in ("daily-projections", "all"):
             run_daily_projections()
+        if args.now in ("mc-projection", "all"):
+            run_mc_projection()
         if args.now in ("lineups", "all"):
             run_fetch_lineups()
         if args.now in ("nascar", "all"):

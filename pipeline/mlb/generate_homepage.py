@@ -488,6 +488,8 @@ def get_today_outlook(today: date, db) -> dict:
             dp.proj_hr_pct,
             dp.proj_ks_6inn,
             dp.proj_ks_f5,
+            dp.k_floor_mc,
+            dp.k_avg_mc,
             COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj_ks_locked,
             dp.proj_ks_locked IS NOT NULL as has_locked_proj,
             ROUND(pk.pk_plus::numeric,1)     as pk_plus,
@@ -661,17 +663,6 @@ def render_homepage(yesterday: date, today: date, db) -> str:
 
     def fmt(v, dec=1):
         return f"{v:.{dec}f}" if v is not None else "—"
-
-    def _proj_ks_display(p) -> str:
-        current = p.get('proj_ks_6inn')
-        locked  = p.get('proj_ks_locked')
-        if current is None:
-            return '—'
-        current_str = f"{float(current):.1f}"
-        if locked is not None and abs(float(current) - float(locked)) >= 0.3:
-            return (f"{current_str}* "
-                    f"<span style='color:#888;font-size:11px'>({float(locked):.1f})</span>")
-        return current_str
 
     def _record_cell(records, key):
         """W-L record cell, colored by outcome; '—' if untracked or <3 starts."""
@@ -982,9 +973,11 @@ def render_homepage(yesterday: date, today: date, db) -> str:
                 {f"{p.get('opp_k_pct'):.1f}%" if p.get('opp_k_pct') is not None else '—'}
             </td>
             <td style="padding:4px 8px;text-align:right;color:{score_color(p.get('pk_plus'))}">{p.get('pk_plus','—')}</td>
-            <td style="padding:4px 8px;text-align:right">{_proj_ks_display(p)}</td>
+            <td style="padding:4px 8px;text-align:right">
+                {fmt(p.get('k_avg_mc'),1) if p.get('k_avg_mc') is not None else '—'}
+            </td>
             <td style="padding:4px 8px;text-align:right;color:#888">
-                {fmt(p.get('proj_ks_f5'),1) if p.get('proj_ks_f5') else '—'}
+                {fmt(p.get('k_floor_mc'),1) if p.get('k_floor_mc') is not None else '—'}
             </td>
         </tr>"""
 
@@ -1282,7 +1275,9 @@ def render_homepage(yesterday: date, today: date, db) -> str:
         <th>P vs PROJ</th>
         <th>OPP vs LINE</th>
         <th>80% LINE</th>
-        <th>OPP K%</th><th>pK+</th><th>PROJ Ks</th><th>F5 Ks</th>
+        <th>OPP K%</th><th>pK+</th>
+        <th>MC Ks<div style="font-size:9px;font-weight:400;color:#888">Regression avg</div></th>
+        <th>MC FLOOR</th>
     </tr></thead>
     <tbody>{pitcher_rows if pitcher_rows else
         '<tr><td colspan="9" style="padding:8px;color:#888">No pitcher projections for today yet.</td></tr>'
@@ -1296,8 +1291,8 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     W = pitcher stayed under line (good for batters) · L = pitcher exceeded line ·
     80% LINE = K total our model projects with ≥80% confidence ·
     OPP K% = opposing team's season strikeout rate (all batters) ·
-    PROJ Ks = full outing projection · F5 Ks = first 5 innings only ·
-    * = updated since first projection · (x.x) = original pre-game locked value
+    MC Ks = Ridge regression average K projection (point-in-time features, retrained daily) ·
+    MC FLOOR = Monte Carlo simulated K floor, ~90% historical hit rate (walk-forward validated)
 </div>
 
 <div style="font-size:13px;font-weight:700;letter-spacing:0.08em;margin-bottom:8px">

@@ -19,7 +19,7 @@ from database import SessionLocal
 from sqlalchemy import text
 
 BALLPARKS = {
-    'ARI': {'lat': 33.4453, 'lon': -112.0667, 'name': 'Chase Field',
+    'AZ':  {'lat': 33.4453, 'lon': -112.0667, 'name': 'Chase Field',
             'cf_direction': 180, 'elevation': 1086},
     'ATL': {'lat': 33.8907, 'lon': -84.4677, 'name': 'Truist Park',
             'cf_direction': 35, 'elevation': 1050},
@@ -57,8 +57,8 @@ BALLPARKS = {
             'cf_direction': 55, 'elevation': 20},
     'NYY': {'lat': 40.8296, 'lon': -73.9262, 'name': 'Yankee Stadium',
             'cf_direction': 25, 'elevation': 55},
-    'OAK': {'lat': 37.7516, 'lon': -122.2005, 'name': 'Oakland Coliseum',
-            'cf_direction': 315, 'elevation': 25},
+    'ATH': {'lat': 38.5799, 'lon': -121.5125, 'name': 'Sutter Health Park',
+            'cf_direction': 46, 'elevation': 24},
     'PHI': {'lat': 39.9061, 'lon': -75.1665, 'name': 'Citizens Bank Park',
             'cf_direction': 10, 'elevation': 20},
     'PIT': {'lat': 40.4469, 'lon': -80.0057, 'name': 'PNC Park',
@@ -81,14 +81,14 @@ BALLPARKS = {
             'cf_direction': 5, 'elevation': 25},
 }
 
-INDOOR_PARKS = {'MIA', 'TB', 'HOU', 'MIL', 'ARI', 'TOR', 'SEA', 'MIN', 'TEX'}
+INDOOR_PARKS = {'MIA', 'TB', 'HOU', 'MIL', 'AZ', 'TOR', 'SEA', 'MIN', 'TEX'}
 
 TEAM_ID_MAP = {
-    109: 'ARI', 144: 'ATL', 110: 'BAL', 111: 'BOS',
+    109: 'AZ',  144: 'ATL', 110: 'BAL', 111: 'BOS',
     112: 'CHC', 145: 'CWS', 113: 'CIN', 114: 'CLE',
     115: 'COL', 116: 'DET', 117: 'HOU', 118: 'KC',
     108: 'LAA', 119: 'LAD', 146: 'MIA', 158: 'MIL',
-    142: 'MIN', 121: 'NYM', 147: 'NYY', 133: 'OAK',
+    142: 'MIN', 121: 'NYM', 147: 'NYY', 133: 'ATH',
     143: 'PHI', 134: 'PIT', 135: 'SD',  137: 'SF',
     136: 'SEA', 138: 'STL', 139: 'TB',  140: 'TEX',
     141: 'TOR', 120: 'WSH',

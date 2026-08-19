@@ -305,6 +305,7 @@ class MLBRunner(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     game_pk = Column(Integer, nullable=False)
+    season = Column(Integer)
     at_bat_index = Column(Integer, nullable=False)
     play_index = Column(Integer, nullable=True)      # index within playEvents
 
@@ -364,6 +365,7 @@ class MLBBoxscoreBatting(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     game_pk = Column(Integer, nullable=False)
+    season = Column(Integer)
     player_id = Column(Integer, nullable=False)
     team_id = Column(Integer, nullable=True)
     batting_order = Column(Integer, nullable=True)      # 100=1st, 200=2nd, etc.
@@ -412,6 +414,7 @@ class MLBBoxscorePitching(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     game_pk = Column(Integer, nullable=False)
+    season = Column(Integer)
     player_id = Column(Integer, nullable=False)
     team_id = Column(Integer, nullable=True)
 
@@ -462,6 +465,7 @@ class MLBBoxscoreFielding(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     game_pk = Column(Integer, nullable=False)
+    season = Column(Integer)
     player_id = Column(Integer, nullable=False)
     team_id = Column(Integer, nullable=True)
 

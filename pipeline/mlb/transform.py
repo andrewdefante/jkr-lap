@@ -219,6 +219,8 @@ def transform_pitches(raw, db):
 
 def transform_runners(raw, db):
     all_plays = raw.data.get("liveData", {}).get("plays", {}).get("allPlays", [])
+    game_info = raw.data.get("gameData", {}).get("game", {})
+    season = int(game_info.get("season", 0)) if game_info.get("season") else None
     db.query(MLBRunner).filter(MLBRunner.game_pk == raw.game_pk).delete()
     db.commit()
 
@@ -233,6 +235,7 @@ def transform_runners(raw, db):
 
             runners.append(MLBRunner(
                 game_pk=raw.game_pk,
+                season=season,
                 at_bat_index=at_bat_index,
                 play_index=runner_event.get("details", {}).get("playIndex"),
                 runner_id=runner.get("id"),
@@ -287,6 +290,8 @@ def transform_linescore(raw, db):
 def transform_boxscore(raw, db):
     boxscore = raw.data.get("liveData", {}).get("boxscore", {})
     teams = boxscore.get("teams", {})
+    game_info = raw.data.get("gameData", {}).get("game", {})
+    season = int(game_info.get("season", 0)) if game_info.get("season") else None
 
     # Clear existing boxscore data for this game
     db.query(MLBBoxscoreBatting).filter(MLBBoxscoreBatting.game_pk == raw.game_pk).delete()
@@ -324,6 +329,7 @@ def transform_boxscore(raw, db):
             if b:
                 batting_rows.append(MLBBoxscoreBatting(
                     game_pk=raw.game_pk,
+                    season=season,
                     player_id=player_id,
                     team_id=team_id,
                     batting_order=batting_order_slot * 100 if batting_order_slot else None,
@@ -362,6 +368,7 @@ def transform_boxscore(raw, db):
             if p:
                 pitching_rows.append(MLBBoxscorePitching(
                     game_pk=raw.game_pk,
+                    season=season,
                     player_id=player_id,
                     team_id=team_id,
                     innings_pitched=float(p["inningsPitched"]) if p.get("inningsPitched") else None,
@@ -415,6 +422,7 @@ def transform_boxscore(raw, db):
 
                 fielding_rows.append(MLBBoxscoreFielding(
                     game_pk=raw.game_pk,
+                    season=season,
                     player_id=player_id,
                     team_id=team_id,
                     assists=f.get("assists"),

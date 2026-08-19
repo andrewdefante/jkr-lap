@@ -185,79 +185,74 @@ def run_send_daily_brief():
 
 
 def run_pa_validation():
-    """Compare BBref season PA totals to our at_bats table. Log mismatches."""
+    """Compare BBref season PA totals to our boxscore_batting table. Log mismatches."""
     from database import SessionLocal
     from sqlalchemy import text
     db = SessionLocal()
     try:
-        result = db.execute(text("""
-            WITH bbref_pa AS (
-                SELECT bb.mlb_id::text as player_id,
-                       bb.pa as bbref_pa, bb.name
-                FROM mlb.bbref_batting bb
-                WHERE bb.year_id = 2026
-                AND bb.pa > 0
+        rows = db.execute(text("""
+            WITH bbref AS (
+                SELECT DISTINCT mlb_id, SUM(pa) AS pa
+                FROM mlb.bbref_batting
+                WHERE year_id = 2026
+                GROUP BY mlb_id
             ),
-            our_pa AS (
-                SELECT ab.batter_id::text as player_id, COUNT(*) as our_pa
-                FROM mlb.at_bats ab
-                JOIN mlb.games g ON g.game_pk = ab.game_pk
-                WHERE g.season = 2026 AND g.game_type = 'R'
-                AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
-                    'Caught Stealing 3B','Wild Pitch','Passed Ball')
-                GROUP BY ab.batter_id
+            bbs AS (
+                SELECT DISTINCT player_id, SUM(plate_appearances) AS pa
+                FROM mlb.boxscore_batting
+                WHERE season = 2026
+                GROUP BY player_id
             )
-            SELECT COUNT(*) as total_bbref,
-                   SUM(bbref_pa) as sum_bbref_pa,
-                   SUM(our_pa) as sum_our_pa,
-                   SUM(CASE WHEN ABS(COALESCE(our_pa,0) - bbref_pa) > 5
-                       THEN 1 ELSE 0 END) as mismatch_count
-            FROM bbref_pa
-            LEFT JOIN our_pa USING (player_id)
-            WHERE bbref_pa >= 10
-        """)).mappings().first()
+            SELECT
+                pid.mlbam_id,
+                pid.first_name,
+                pid.last_name,
+                bbref.pa AS bbref_pa,
+                bbs.pa AS boxscore_pa,
+                bbref.pa - COALESCE(bbs.pa, 0) AS gap
+            FROM mlb.player_id_map pid
+            INNER JOIN bbref ON bbref.mlb_id = pid.mlbam_id
+            LEFT JOIN bbs ON bbref.mlb_id = bbs.player_id
+            WHERE bbref.pa != COALESCE(bbs.pa, 0)
+            ORDER BY ABS(bbref.pa - COALESCE(bbs.pa, 0)) DESC
+        """)).mappings().all()
 
-        sum_bbref = int(result['sum_bbref_pa'] or 0)
-        sum_ours = int(result['sum_our_pa'] or 0)
-        mismatches = int(result['mismatch_count'] or 0)
+        all_mismatches = [dict(r) for r in rows]
+
+        total_bbref = db.execute(text(
+            "SELECT SUM(pa) FROM mlb.bbref_batting WHERE year_id = 2026"
+        )).scalar() or 0
+        total_ours = db.execute(text(
+            "SELECT SUM(plate_appearances) FROM mlb.boxscore_batting WHERE season = 2026"
+        )).scalar() or 0
+
+        sum_bbref = int(total_bbref)
+        sum_ours = int(total_ours)
         diff_pct = abs(sum_bbref - sum_ours) / max(sum_bbref, 1) * 100
 
         log.info(f"PA Validation: BBref={sum_bbref:,} Ours={sum_ours:,} "
-                 f"Diff={diff_pct:.1f}% Mismatches={mismatches}")
+                 f"Diff={diff_pct:.1f}% Mismatches={len(all_mismatches)}")
+
+        # Always surface the top 20 individual gaps in the email — the
+        # aggregate diff_pct can net out fine even when specific players
+        # are meaningfully off, so severity-gating the log warning is fine
+        # but the report shouldn't hide the detail.
+        mismatches_for_email = []
+        for r in all_mismatches[:20]:
+            name = f"{r['first_name'] or ''} {r['last_name'] or ''}".strip()
+            mismatches_for_email.append({
+                'name': name,
+                'bbref_pa': r['bbref_pa'],
+                'our_pa': r['boxscore_pa'] or 0,
+                'gap': r['gap'],
+            })
 
         if diff_pct > 2.0:
             log.warning(f"PA MISMATCH DETECTED — {diff_pct:.1f}% gap. "
                         f"BBref data may be stale — run fetch_bbref.py to update.")
-            rows = db.execute(text("""
-                WITH bbref_pa AS (
-                    SELECT bb.mlb_id::text as player_id,
-                           bb.pa as bbref_pa, bb.name
-                    FROM mlb.bbref_batting bb
-                    WHERE bb.year_id = 2026
-                    AND bb.pa > 0
-                ),
-                our_pa AS (
-                    SELECT ab.batter_id::text as player_id, COUNT(*) as our_pa
-                    FROM mlb.at_bats ab
-                    JOIN mlb.games g ON g.game_pk = ab.game_pk
-                    WHERE g.season = 2026 AND g.game_type = 'R'
-                    AND ab.event NOT IN ('Runner Out','Caught Stealing 2B',
-                        'Caught Stealing 3B','Wild Pitch','Passed Ball')
-                    GROUP BY ab.batter_id
-                )
-                SELECT b.name, b.player_id, b.bbref_pa,
-                       COALESCE(o.our_pa, 0) as our_pa,
-                       b.bbref_pa - COALESCE(o.our_pa, 0) as gap
-                FROM bbref_pa b
-                LEFT JOIN our_pa o USING (player_id)
-                WHERE ABS(COALESCE(o.our_pa, 0) - b.bbref_pa) > 10
-                AND b.bbref_pa >= 20
-                ORDER BY ABS(COALESCE(o.our_pa, 0) - b.bbref_pa) DESC
-                LIMIT 20
-            """)).mappings().all()
-            for r in rows:
-                log.warning(f"  {r['name']}: BBref={r['bbref_pa']} "
-                            f"Ours={r['our_pa']} Gap={r['gap']}")
+            for m in mismatches_for_email:
+                log.warning(f"  {m['name']}: BBref={m['bbref_pa']} "
+                            f"Ours={m['our_pa']} Gap={m['gap']}")
         else:
             log.info("PA validation OK — within 2% tolerance")
 
@@ -265,7 +260,8 @@ def run_pa_validation():
             'sum_bbref_pa': sum_bbref,
             'sum_our_pa': sum_ours,
             'diff_pct': round(diff_pct, 2),
-            'mismatch_count': mismatches,
+            'mismatch_count': len(all_mismatches),
+            'mismatches': mismatches_for_email,
         }
     finally:
         db.close()

@@ -383,6 +383,11 @@ def run_build_calibration():
                 ["--lookback", "14"])
 
 
+def run_mc_calibration():
+    _run_script("MC K Calibration", "/pipeline/mlb/build_mc_calibration.py",
+                ["--lookback", "14"])
+
+
 def run_build_game_projections():
     """Score yesterday's completed games (nightly)."""
     yesterday = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -582,6 +587,7 @@ def main():
                  "bapv", "pitcher-mix",
                  "goose", "stuff-score", "pk-phr", "juiced2", "goose3",
                  "splits", "workload", "scores", "game-scores", "calibration",
+                 "mc-calibration",
                  "weather", "runners", "kalshi", "actuals", "homepage",
                  "batter-tendencies", "daily-projections", "mc-projection", "lineups",
                  "update-status", "team-defense", "nascar", "f1", "integrity", "player-map", "all"],
@@ -635,6 +641,8 @@ def main():
             run_build_model_scores()
         if args.now in ("calibration", "all"):
             run_build_calibration()
+        if args.now in ("mc-calibration", "all"):
+            run_mc_calibration()
         if args.now in ("game-scores", "all"):
             run_build_game_projections()
         if args.now in ("player-map", "all"):
@@ -675,6 +683,12 @@ def main():
         id="calibration_nightly", name="Update K/HR calibration factors (11:22pm PT)",
         misfire_grace_time=1800)
 
+    # 11:23pm PT — MC K floor calibration (after the K/HR calibration run,
+    # so it can carry forward that run's freshly-computed values)
+    scheduler.add_job(run_mc_calibration, CronTrigger(hour=23, minute=23, timezone=PT),
+        id="mc_calibration_nightly", name="MC K Projection calibration (11:23pm PT)",
+        misfire_grace_time=600)
+
     # 11:25pm PT — game projections scoring (after actuals)
     scheduler.add_job(run_build_game_projections, CronTrigger(hour=23, minute=25, timezone=PT),
         id="game_projections_nightly", name="Score game run and W/L projections (11:25pm PT)",
@@ -689,11 +703,6 @@ def main():
     scheduler.add_job(run_mlb_morning, CronTrigger(hour=6, minute=0, timezone=PT),
         id="mlb_morning", name="MLB morning pipeline (6:00am PT)", misfire_grace_time=1800)
 
-    # 6:05am PT — team defense rebuild (after overnight game data is loaded)
-    scheduler.add_job(run_build_team_defense, CronTrigger(hour=6, minute=5, timezone=PT),
-        id="team_defense_daily", name="Team defense metrics rebuild (6:05am PT)",
-        misfire_grace_time=600)
-
     # 6:10am PT — data integrity check (after fetch, before projections)
     scheduler.add_job(run_integrity_check, CronTrigger(hour=6, minute=10, timezone=PT),
         id="integrity_check_daily",
@@ -707,19 +716,15 @@ def main():
         id="daily_brief_email", name="Send daily brief email (6:35am PT)", misfire_grace_time=600)
 
     # ── MORNING REFRESH ──────────────────────────────────────────────────────
-    # 7:00am PT — weather + workload
+    # weather refresh
     scheduler.add_job(run_fetch_weather, CronTrigger(hour='12,15,18', minute=0, timezone=PT),
         id="weather_morning", name="Weather fetch (7:00am PT)", misfire_grace_time=600)
-    scheduler.add_job(run_build_workload, CronTrigger(hour=7, minute=0, timezone=PT),
-        id="workload_morning", name="Workload/ACWR rebuild (7:00am PT)", misfire_grace_time=600)
 
-    # 7:30am PT — first daily projections + Kalshi refresh
+    # 7:30am PT — first daily projections
     scheduler.add_job(run_daily_projections, CronTrigger(hour=7, minute=30, timezone=PT),
         id="projections_730", name="Daily projections 7:30am PT", misfire_grace_time=600)
-    scheduler.add_job(run_fetch_kalshi, CronTrigger(hour=7, minute=30, timezone=PT),
-        id="kalshi_730", name="Kalshi fetch 7:30am PT", misfire_grace_time=600)
 
-    # 8:00am–11:00pm PT — projections + Kalshi every 30 min
+    # 8:00am–11:00pm PT — projections every 30 min
     for h, m, suffix in [
         (8, 0, "800"), (8, 30, "830"), (9, 0, "900"),
         (9, 30, "930"), (10, 0, "1000"), (10, 30, "1030"),
@@ -740,10 +745,6 @@ def main():
         scheduler.add_job(run_daily_projections,
             CronTrigger(hour=h, minute=m, timezone=PT),
             id=f"projections_{suffix}", name=f"Daily projections {suffix} PT",
-            misfire_grace_time=600)
-        scheduler.add_job(run_fetch_kalshi,
-            CronTrigger(hour=h, minute=m, timezone=PT),
-            id=f"kalshi_{suffix}", name=f"Kalshi fetch {suffix} PT",
             misfire_grace_time=600)
 
     # ── GAME PROJECTIONS (hourly 9am–9pm PT) ────────────────────────────────
@@ -807,8 +808,8 @@ def main():
     log.info("  MLB morning:         6:00am PT — fetch→BBref→models→projections + integrity email")
     log.info("  Integrity check:     6:10am PT")
     log.info("  Morning brief:       6:30am PT / email 6:35am PT")
-    log.info("  Weather + workload:  7:00am PT")
-    log.info("  Projections+Kalshi:  7:30am–11pm PT every 30 min (32 runs/day)")
+    log.info("  Weather:             12pm / 3pm / 6pm PT")
+    log.info("  Projections:         7:30am–11pm PT every 30 min (32 runs/day)")
     log.info("  Lineup poll:         7am–11:30pm PT every 30 min")
     log.info("  Homepage + email:    9am / 12pm / 4pm PT")
     log.info("  Status updates:      7am–11:30pm PT every 30 min (offset :15/:45)")

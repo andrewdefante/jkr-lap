@@ -43,6 +43,19 @@ GUMBO_BASE = "https://statsapi.mlb.com/api/v1.1"
 # W = World Series
 GAME_TYPES = {"R": "Regular Season", "S": "Spring Training", "P": "Playoffs"}
 
+# team_id -> abbreviation, used only to populate home/away_team_abbrev when
+# update_statuses() creates a new mlb.games row from schedule data (which has
+# no abbreviation field). transform_game() overwrites these with the real
+# GUMBO-sourced abbreviation once the game is Final and fully fetched.
+TEAM_ID_TO_ABBREV = {
+    108: 'LAA', 109: 'AZ',  110: 'BAL', 111: 'BOS', 112: 'CHC',
+    113: 'CIN', 114: 'CLE', 115: 'COL', 116: 'DET', 117: 'HOU',
+    118: 'KC',  119: 'LAD', 120: 'WSH', 121: 'NYM', 133: 'ATH',
+    134: 'PIT', 135: 'SD',  136: 'SEA', 137: 'SF',  138: 'STL',
+    139: 'TB',  140: 'TEX', 141: 'TOR', 142: 'MIN', 143: 'PHI',
+    144: 'ATL', 145: 'CWS', 146: 'MIA', 147: 'NYY', 158: 'MIL',
+}
+
 
 def get_schedule(season: int, game_type: str = "R") -> list[dict]:
     """Fetch full schedule for a season and game type. Returns list of game dicts."""
@@ -77,13 +90,18 @@ def get_schedule(season: int, game_type: str = "R") -> list[dict]:
 
 
 def get_full_schedule(season: int, game_type: str = "R") -> list[dict]:
-    """Fetch full schedule with all statuses and current scores (one API call)."""
+    """Fetch full schedule with all statuses, current scores, and probable
+    pitchers (one API call). hydrate=probablePitcher is required for MLB's
+    schedule endpoint to include teams.{home,away}.probablePitcher — without
+    it, those keys are simply absent from the response."""
     url = f"{MLB_BASE}/schedule"
     params = {
         "sportId": 1,
         "season": season,
         "gameType": game_type,
-        "fields": "dates,date,games,gamePk,gameType,status,detailedState,teams,away,home,team,abbreviation,name,score"
+        "hydrate": "probablePitcher",
+        "fields": "dates,date,games,gamePk,gameType,status,detailedState,teams,"
+                  "away,home,team,id,name,score,probablePitcher,fullName"
     }
 
     with httpx.Client(timeout=30.0) as client:
@@ -95,52 +113,105 @@ def get_full_schedule(season: int, game_type: str = "R") -> list[dict]:
     for date in data.get("dates", []):
         for game in date.get("games", []):
             teams = game.get("teams", {})
+            away_team = teams.get("away", {}).get("team", {})
+            home_team = teams.get("home", {}).get("team", {})
+            away_probable = teams.get("away", {}).get("probablePitcher") or {}
+            home_probable = teams.get("home", {}).get("probablePitcher") or {}
             games.append({
                 "game_pk": game["gamePk"],
                 "game_date": date["date"],
                 "status": game.get("status", {}).get("detailedState"),
-                "away": teams.get("away", {}).get("team", {}).get("abbreviation"),
-                "home": teams.get("home", {}).get("team", {}).get("abbreviation"),
+                "away_team_id": away_team.get("id"),
+                "away_team_name": away_team.get("name"),
+                "home_team_id": home_team.get("id"),
+                "home_team_name": home_team.get("name"),
                 "away_score": teams.get("away", {}).get("score"),
                 "home_score": teams.get("home", {}).get("score"),
+                "away_probable_pitcher_id": away_probable.get("id"),
+                "away_probable_pitcher_name": away_probable.get("fullName"),
+                "home_probable_pitcher_id": home_probable.get("id"),
+                "home_probable_pitcher_name": home_probable.get("fullName"),
             })
     return games
 
 
 def update_statuses(season: int, game_type: str = "R", db=None) -> dict:
     """
-    Update status and scores in mlb.games from the schedule API without re-fetching GUMBO.
-    Fast: one API call covers all games for the season.
+    Upsert status, scores, and probable pitchers into mlb.games from the
+    schedule API without re-fetching GUMBO. Fast: one API call covers all
+    games for the season.
+
+    This is an upsert (not a plain UPDATE) because mlb.games only gains a
+    row via GUMBO fetch+transform, which only happens for Final games —
+    scheduled/in-progress games otherwise have no row at all. Probable
+    pitchers are only useful pre-game, so this must be able to create the
+    row. On conflict, only status/scores/probable-pitcher fields are
+    touched — venue, weather, decisions, etc. are GUMBO-only and get set
+    later by transform_game() once the game is Final and fully fetched.
     """
     from sqlalchemy import text
 
     print(f"  Fetching {GAME_TYPES.get(game_type, game_type)} schedule for {season}...")
     games = get_full_schedule(season, game_type)
-    print(f"  Found {len(games)} games — checking for status changes...")
+    print(f"  Found {len(games)} games — upserting status/scores/probable pitchers...")
 
-    update_sql = text("""
-        UPDATE mlb.games
-        SET status     = :status,
-            home_score = :home_score,
-            away_score = :away_score
-        WHERE game_pk = :game_pk
-          AND (status IS DISTINCT FROM :status
-               OR home_score IS DISTINCT FROM :home_score
-               OR away_score IS DISTINCT FROM :away_score)
+    upsert_sql = text("""
+        INSERT INTO mlb.games (
+            game_pk, game_date, game_type, season, status,
+            home_team_id, home_team_name, home_team_abbrev,
+            away_team_id, away_team_name, away_team_abbrev,
+            home_score, away_score,
+            home_probable_pitcher_id, home_probable_pitcher_name,
+            away_probable_pitcher_id, away_probable_pitcher_name
+        ) VALUES (
+            :game_pk, :game_date, :game_type, :season, :status,
+            :home_team_id, :home_team_name, :home_team_abbrev,
+            :away_team_id, :away_team_name, :away_team_abbrev,
+            :home_score, :away_score,
+            :home_probable_pitcher_id, :home_probable_pitcher_name,
+            :away_probable_pitcher_id, :away_probable_pitcher_name
+        )
+        ON CONFLICT (game_pk) DO UPDATE SET
+            status = EXCLUDED.status,
+            home_score = EXCLUDED.home_score,
+            away_score = EXCLUDED.away_score,
+            home_probable_pitcher_id = EXCLUDED.home_probable_pitcher_id,
+            home_probable_pitcher_name = EXCLUDED.home_probable_pitcher_name,
+            away_probable_pitcher_id = EXCLUDED.away_probable_pitcher_id,
+            away_probable_pitcher_name = EXCLUDED.away_probable_pitcher_name,
+            updated_at = NOW()
+        WHERE mlb.games.status IS DISTINCT FROM EXCLUDED.status
+           OR mlb.games.home_score IS DISTINCT FROM EXCLUDED.home_score
+           OR mlb.games.away_score IS DISTINCT FROM EXCLUDED.away_score
+           OR mlb.games.home_probable_pitcher_id IS DISTINCT FROM EXCLUDED.home_probable_pitcher_id
+           OR mlb.games.away_probable_pitcher_id IS DISTINCT FROM EXCLUDED.away_probable_pitcher_id
     """)
 
     updated = 0
     for game in games:
-        result = db.execute(update_sql, {
+        result = db.execute(upsert_sql, {
             "game_pk":    game["game_pk"],
+            "game_date":  game["game_date"],
+            "game_type":  game_type,
+            "season":     season,
             "status":     game["status"],
+            "home_team_id":   game["home_team_id"],
+            "home_team_name": game["home_team_name"],
+            "home_team_abbrev": TEAM_ID_TO_ABBREV.get(game["home_team_id"]),
+            "away_team_id":   game["away_team_id"],
+            "away_team_name": game["away_team_name"],
+            "away_team_abbrev": TEAM_ID_TO_ABBREV.get(game["away_team_id"]),
             "home_score": game["home_score"],
             "away_score": game["away_score"],
+            "home_probable_pitcher_id":   game["home_probable_pitcher_id"],
+            "home_probable_pitcher_name": game["home_probable_pitcher_name"],
+            "away_probable_pitcher_id":   game["away_probable_pitcher_id"],
+            "away_probable_pitcher_name": game["away_probable_pitcher_name"],
         })
         updated += result.rowcount
 
     db.commit()
-    print(f"  Updated {updated} games (status/score changed)")
+    print(f"  Upserted {updated} games (status/score/probable-pitcher changed or new)")
     return {"total": len(games), "updated": updated}
 
 

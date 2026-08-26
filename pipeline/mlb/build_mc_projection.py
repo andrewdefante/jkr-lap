@@ -289,6 +289,22 @@ def get_training_data(target_date: str, db) -> list:
     return [dict(r) for r in rows]
 
 
+def get_floor_adjustment(db) -> float:
+    """Load the most recent MC floor adjustment from projection_calibration."""
+    try:
+        row = db.execute(text("""
+            SELECT mc_floor_adjustment
+            FROM mlb.projection_calibration
+            WHERE mc_floor_adjustment IS NOT NULL
+            ORDER BY computed_at DESC LIMIT 1
+        """)).scalar()
+        if row is not None:
+            return float(row)
+    except Exception:
+        pass
+    return MC_FLOOR_ADJUSTMENT  # fallback to default 0.95
+
+
 def get_today_features(target_date: str, db) -> list:
     rows = db.execute(text(TODAY_SQL), {
         "target_date": target_date,
@@ -300,7 +316,8 @@ def get_today_features(target_date: str, db) -> list:
     return [dict(r) for r in rows]
 
 
-def simulate_k(pred_k_rate, avg_bf, std_bf, min_bf, max_bf, resid_std, n_sims=N_SIMS):
+def simulate_k(pred_k_rate, avg_bf, std_bf, min_bf, max_bf, resid_std,
+                floor_adjustment=MC_FLOOR_ADJUSTMENT, n_sims=N_SIMS):
     """
     Monte Carlo K count simulation using:
     - Truncated normal for BF (properly bounded at pitcher's actual min/max)
@@ -320,7 +337,7 @@ def simulate_k(pred_k_rate, avg_bf, std_bf, min_bf, max_bf, resid_std, n_sims=N_
     sim_rates = pred_k_rate + np.random.normal(0, resid_std, n_sims)
     sim_rates = np.clip(sim_rates, 0.05, 0.60)
     sim_k = sim_rates * sim_bf
-    floor = np.percentile(sim_k, 10) * MC_FLOOR_ADJUSTMENT
+    floor = np.percentile(sim_k, 10) * floor_adjustment
     avg = np.mean(sim_k)
     return round(float(floor), 2), round(float(avg), 2)
 
@@ -332,6 +349,8 @@ def build_mc_projections(target_date: str, db) -> int:
     upsert into daily_projections.
     Returns number of pitchers updated.
     """
+    floor_adjustment = get_floor_adjustment(db)
+
     train_rows = get_training_data(target_date, db)
     if len(train_rows) < MIN_TRAIN_ROWS:
         print(f"  MC projection: insufficient training data ({len(train_rows)} rows)")
@@ -377,7 +396,8 @@ def build_mc_projections(target_date: str, db) -> int:
             float(row['std_bf']),
             float(row['min_bf']),
             float(row['max_bf']),
-            resid_std
+            resid_std,
+            floor_adjustment=floor_adjustment,
         )
 
         db.execute(text("""
@@ -399,6 +419,7 @@ def build_mc_projections(target_date: str, db) -> int:
     db.commit()
     print(f"  MC projection: {updated} pitchers updated "
           f"(train_rows={len(train_df)}, resid_std={resid_std:.4f}, "
+          f"floor_adj={floor_adjustment:.3f}, "
           f"alpha={pipe.named_steps['ridge'].alpha_})")
     return updated
 

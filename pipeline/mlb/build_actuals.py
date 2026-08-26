@@ -21,7 +21,7 @@ def build_pitcher_actuals(game_date: date, db):
             actual_hits_allowed, actual_pitches,
             proj_k_pct, proj_hr_pct, proj_ops,
             proj_ks_6inn, proj_ks_locked,
-            kalshi_k_line, kalshi_k_yes_price
+            k_avg_mc, k_floor_mc
         )
         SELECT
             :game_date,
@@ -46,8 +46,8 @@ def build_pitcher_actuals(game_date: date, db):
             dp.proj_ops,
             dp.proj_ks_6inn,
             COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj_ks_locked,
-            km.floor_strike,
-            km.yes_ask
+            dp.k_avg_mc,
+            dp.k_floor_mc
         FROM mlb.boxscore_pitching bp
         JOIN mlb.games g ON g.game_pk = bp.game_pk
             AND g.game_date = :game_date_str
@@ -63,18 +63,6 @@ def build_pitcher_actuals(game_date: date, db):
         LEFT JOIN mlb.daily_projections dp
             ON dp.pitcher_id = bp.player_id
             AND dp.snapshot_date = :game_date
-        LEFT JOIN LATERAL (
-            SELECT floor_strike, yes_ask
-            FROM mlb.kalshi_markets
-            WHERE mlbam_id = bp.player_id
-              AND game_date = :game_date
-              AND fetch_date = (
-                  SELECT MAX(fetch_date) FROM mlb.kalshi_markets
-                  WHERE game_date = :game_date
-              )
-            ORDER BY ABS(implied_prob - 0.5)
-            LIMIT 1
-        ) km ON true
         WHERE bp.games_started = 1
         ON CONFLICT (game_date, game_pk, player_id, player_type) DO UPDATE SET
             actual_k = EXCLUDED.actual_k,
@@ -82,8 +70,8 @@ def build_pitcher_actuals(game_date: date, db):
             actual_er = EXCLUDED.actual_er,
             proj_ks_6inn = EXCLUDED.proj_ks_6inn,
             proj_ks_locked = EXCLUDED.proj_ks_locked,
-            kalshi_k_line = EXCLUDED.kalshi_k_line,
-            kalshi_k_yes_price = EXCLUDED.kalshi_k_yes_price,
+            k_avg_mc = EXCLUDED.k_avg_mc,
+            k_floor_mc = EXCLUDED.k_floor_mc,
             computed_at = NOW()
     """)
     result = db.execute(sql, {"game_date": game_date, "game_date_str": str(game_date)})

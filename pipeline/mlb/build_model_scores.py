@@ -53,6 +53,7 @@ def build_pitcher_scores(score_date: date, db) -> list:
                 actual_ip,
                 actual_er,
                 proj_k_pct,
+                k_avg_mc,
                 -- Use locked pre-game K projection when available, else stored 6inn value,
                 -- else fall back to deriving from K% (legacy rows before 2026-06-02)
                 ROUND(COALESCE(
@@ -88,6 +89,28 @@ def build_pitcher_scores(score_date: date, db) -> list:
             -- K RATE
             ROUND(AVG(ABS(actual_k_rate - proj_k_pct))::numeric, 3)         AS k_rate_mae,
             ROUND(AVG(proj_k_pct - actual_k_rate)::numeric, 3)              AS k_rate_bias,
+            -- MC K COUNT (actual_k vs the MC regression model's k_avg_mc)
+            COUNT(CASE WHEN k_avg_mc IS NOT NULL THEN 1 END)                 AS n_mc,
+            ROUND(AVG(ABS(actual_k - k_avg_mc))
+                  FILTER (WHERE k_avg_mc IS NOT NULL)::numeric, 3)           AS mc_k_count_mae,
+            ROUND(SQRT(AVG(POWER(actual_k - k_avg_mc, 2))
+                  FILTER (WHERE k_avg_mc IS NOT NULL))::numeric, 3)          AS mc_k_count_rmse,
+            ROUND(AVG(k_avg_mc)
+                  FILTER (WHERE k_avg_mc IS NOT NULL)::numeric, 2)           AS mc_k_count_proj,
+            ROUND(AVG(actual_k)
+                  FILTER (WHERE k_avg_mc IS NOT NULL)::numeric, 2)           AS mc_k_count_actual,
+            ROUND(AVG(k_avg_mc - actual_k)
+                  FILTER (WHERE k_avg_mc IS NOT NULL)::numeric, 3)           AS mc_k_count_bias,
+            ROUND(SUM(CASE WHEN k_avg_mc IS NOT NULL
+                           AND ABS(actual_k - k_avg_mc) <= 1
+                           THEN 1 ELSE 0 END)::numeric
+                  / NULLIF(COUNT(CASE WHEN k_avg_mc IS NOT NULL THEN 1 END),0) * 100, 1)
+                                                                              AS mc_k_count_w1,
+            ROUND(SUM(CASE WHEN k_avg_mc IS NOT NULL
+                           AND ABS(actual_k - k_avg_mc) <= 2
+                           THEN 1 ELSE 0 END)::numeric
+                  / NULLIF(COUNT(CASE WHEN k_avg_mc IS NOT NULL THEN 1 END),0) * 100, 1)
+                                                                              AS mc_k_count_w2,
             -- ER PROXY
             COUNT(CASE WHEN actual_er IS NOT NULL AND proj_er IS NOT NULL
                        THEN 1 END)                                           AS n_er,
@@ -149,6 +172,15 @@ def build_pitcher_scores(score_date: date, db) -> list:
             'mean_proj': r['er_proj'], 'mean_actual': r['er_actual'],
             'bias': r['er_bias'],
             'within_1': None, 'within_2': None,
+        })
+    if r.get('n_mc'):
+        rows.append({
+            'score_date': score_date, 'player_type': 'pitcher', 'metric': 'mc_k_count',
+            'n_players': r['n_mc'],
+            'mae': r['mc_k_count_mae'], 'rmse': r['mc_k_count_rmse'],
+            'mean_proj': r['mc_k_count_proj'], 'mean_actual': r['mc_k_count_actual'],
+            'bias': r['mc_k_count_bias'],
+            'within_1': r['mc_k_count_w1'], 'within_2': r['mc_k_count_w2'],
         })
     return rows
 

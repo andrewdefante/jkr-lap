@@ -62,3 +62,7 @@ async def mlb_dashboard():
 @app.get("/f1-dashboard")
 async def f1_dashboard():
     return FileResponse("/frontend/f1.html")
+
+@app.get("/pitcher-projections", include_in_schema=False)
+async def pitcher_projections():
+    return FileResponse("/frontend/pitcher_projections.html")

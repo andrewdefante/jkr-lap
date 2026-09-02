@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pitcher K Projections</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 1rem; }
+    .pitcher-row { display: flex; align-items: center; gap: 12px; padding: 10px 0;
+                   border-bottom: 0.5px solid #e1e0d9; cursor: pointer; }
+    .pitcher-row:hover { background: #f9f9f8; }
+    .headshot { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
+    .pitcher-info { min-width: 180px; }
+    .pitcher-name { font-weight: 500; font-size: 14px; }
+    .pitcher-meta { font-size: 12px; color: #52514e; }
+    .plot-container { flex: 1; position: relative; }
+    .proj-label { min-width: 70px; text-align: right; font-size: 13px; font-weight: 500; color: #185FA5; }
+    .detail-row { display: none; background: #f9f9f8; padding: 12px 60px;
+                  border-bottom: 0.5px solid #e1e0d9; }
+    .detail-row.open { display: flex; gap: 48px; }
+    .detail-table { font-size: 12px; }
+    .detail-table th { color: #52514e; font-weight: 500; padding: 2px 8px 4px 0; }
+    .detail-table td { padding: 2px 8px 2px 0; }
+    .section-label { font-size: 11px; font-weight: 500; color: #52514e;
+                     text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div style="display:flex; align-items:center; gap:12px; margin-bottom:1.5rem;">
+    <h2 style="margin:0; font-size:16px; font-weight:500;">Pitcher K Projections</h2>
+    <input type="date" id="date-picker">
+    <button onclick="loadData()">Load</button>
+    <span id="status" style="font-size:12px; color:#888;"></span>
+  </div>
+  <div id="rows"></div>
+
+  <script>
+    const API = window.location.origin;
+
+    function today() {
+      return new Date().toISOString().slice(0, 10);
+    }
+
+    document.getElementById('date-picker').value = today();
+
+    function drawBoxWhisker(container, d) {
+      const W = 400, H = 44, PAD = 8, MAX_K = 15;
+      const scale = (v) => PAD + (v / MAX_K) * (W - PAD * 2);
+
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', W);
+      svg.setAttribute('height', H);
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+      const wLow = scale(d.whisker_low ?? 0);
+      const q1x  = scale(d.q1 ?? 0);
+      const medx = scale(d.median ?? 0);
+      const q3x  = scale(d.q3 ?? 0);
+      const wHigh = scale(d.whisker_high ?? MAX_K);
+
+      const wLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      wLine.setAttribute('x1', wLow); wLine.setAttribute('x2', wHigh);
+      wLine.setAttribute('y1', 32); wLine.setAttribute('y2', 32);
+      wLine.setAttribute('stroke', '#185FA5'); wLine.setAttribute('stroke-width', '1.5');
+      svg.appendChild(wLine);
+
+      for (const x of [wLow, wHigh]) {
+        const cap = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        cap.setAttribute('x1', x); cap.setAttribute('x2', x);
+        cap.setAttribute('y1', 26); cap.setAttribute('y2', 38);
+        cap.setAttribute('stroke', '#185FA5'); cap.setAttribute('stroke-width', '1.5');
+        svg.appendChild(cap);
+      }
+
+      const box = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      box.setAttribute('x', q1x); box.setAttribute('y', 24);
+      box.setAttribute('width', Math.max(q3x - q1x, 2));
+      box.setAttribute('height', 16);
+      box.setAttribute('fill', '#E6F1FB'); box.setAttribute('stroke', '#185FA5');
+      box.setAttribute('stroke-width', '1.5'); box.setAttribute('rx', '2');
+      svg.appendChild(box);
+
+      const med = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      med.setAttribute('x1', medx); med.setAttribute('x2', medx);
+      med.setAttribute('y1', 24); med.setAttribute('y2', 40);
+      med.setAttribute('stroke', '#185FA5'); med.setAttribute('stroke-width', '2');
+      svg.appendChild(med);
+
+      const labels = [
+        { x: wLow,  v: d.whisker_low,  bold: false },
+        { x: q1x,   v: d.q1,           bold: false },
+        { x: medx,  v: d.median,       bold: true  },
+        { x: q3x,   v: d.q3,           bold: false },
+        { x: wHigh, v: d.whisker_high, bold: false },
+      ];
+      for (const lb of labels) {
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', lb.x); t.setAttribute('y', 14);
+        t.setAttribute('text-anchor', 'middle');
+        t.setAttribute('font-size', lb.bold ? '11' : '10');
+        t.setAttribute('font-weight', lb.bold ? '600' : '400');
+        t.setAttribute('fill', lb.bold ? '#185FA5' : '#52514e');
+        t.textContent = Number(lb.v ?? 0).toFixed(1);
+        svg.appendChild(t);
+      }
+
+      if (d.actual_k != null) {
+        const ax = scale(d.actual_k);
+        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        dot.setAttribute('cx', ax); dot.setAttribute('cy', 32);
+        dot.setAttribute('r', 5);
+        dot.setAttribute('fill', '#D85A30'); dot.setAttribute('stroke', 'white');
+        dot.setAttribute('stroke-width', '1.5');
+        svg.appendChild(dot);
+        const at = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        at.setAttribute('x', ax); at.setAttribute('y', H - 1);
+        at.setAttribute('text-anchor', 'middle');
+        at.setAttribute('font-size', '9'); at.setAttribute('fill', '#D85A30');
+        at.textContent = `${d.actual_k}K`;
+        svg.appendChild(at);
+      }
+
+      container.appendChild(svg);
+    }
+
+    function parseList(str) {
+      return str ? str.split(', ') : [];
+    }
+
+    function buildDetailRow(d) {
+      const pitDates = parseList(d.pitcher_last3_dates);
+      const pitKs    = parseList(d.pitcher_last3_k);
+      const pitBFs   = parseList(d.pitcher_last3_bf);
+      const oppDates = parseList(d.last3_dates);
+      const oppKs    = parseList(d.last3_k);
+      const oppPAs   = parseList(d.last3_pa);
+
+      const pitRows = pitDates.map((dt, i) =>
+        `<tr><td>${dt}</td><td>${pitKs[i] ?? '—'}</td><td>${pitBFs[i] ?? '—'}</td></tr>`
+      ).join('');
+
+      const oppRows = oppDates.map((dt, i) =>
+        `<tr><td>${dt}</td><td>${oppKs[i] ?? '—'}</td><td>${oppPAs[i] ?? '—'}</td></tr>`
+      ).join('');
+
+      return `
+        <div>
+          <div class="section-label">Pitcher last 3 starts (${d.pitcher_side})</div>
+          <table class="detail-table">
+            <tr><th>Date</th><th>K</th><th>BF</th></tr>
+            ${pitRows || '<tr><td colspan="3" style="color:#888">No data</td></tr>'}
+          </table>
+        </div>
+        <div>
+          <div class="section-label">Opp last 3 games vs ${d.pitch_hand}HP (${d.opp_side})</div>
+          <table class="detail-table">
+            <tr><th>Date</th><th>K</th><th>PA</th></tr>
+            ${oppRows || '<tr><td colspan="3" style="color:#888">No data</td></tr>'}
+          </table>
+        </div>
+      `;
+    }
+
+    async function loadData() {
+      const date = document.getElementById('date-picker').value;
+      const status = document.getElementById('status');
+      const container = document.getElementById('rows');
+      status.textContent = 'Loading...';
+      container.innerHTML = '';
+
+      try {
+        const res = await fetch(`${API}/mlb/pitcher-boxwhisker?date=${date}`);
+        const data = await res.json();
+
+        if (!data.length) {
+          container.innerHTML = '<p style="color:#888; font-size:13px;">No pitchers found for this date.</p>';
+          status.textContent = '';
+          return;
+        }
+
+        data.forEach((d, i) => {
+          const row = document.createElement('div');
+          row.className = 'pitcher-row';
+          row.innerHTML = `
+            <img class="headshot"
+              src="https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_68,q_auto:best/v1/people/${d.pitcher_id}/headshot/67/current"
+              alt="${d.pitcher_name}" onerror="this.src='https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_68,q_auto:best/v1/people/0/headshot/67/current'">
+            <div class="pitcher-info">
+              <div class="pitcher-name">${d.pitcher_name}</div>
+              <div class="pitcher-meta">${d.team_abbrev} vs ${d.opp_abbrev} · ${d.pitcher_side} · ${d.pitch_hand ?? '?'}HP</div>
+            </div>
+            <div class="plot-container" id="plot-${i}"></div>
+            <div class="proj-label">${Number(d.proj ?? 0).toFixed(1)} Ks</div>
+          `;
+
+          const detail = document.createElement('div');
+          detail.className = 'detail-row';
+          detail.id = `detail-${i}`;
+          detail.innerHTML = buildDetailRow(d);
+
+          row.addEventListener('click', () => {
+            const isOpen = detail.classList.contains('open');
+            document.querySelectorAll('.detail-row.open').forEach(el => el.classList.remove('open'));
+            if (!isOpen) detail.classList.add('open');
+          });
+
+          container.appendChild(row);
+          container.appendChild(detail);
+
+          drawBoxWhisker(document.getElementById(`plot-${i}`), d);
+        });
+
+        status.textContent = `${data.length} pitchers · ${date}`;
+      } catch (e) {
+        status.textContent = 'Error loading data';
+        console.error(e);
+      }
+    }
+
+    loadData();
+  </script>
+</body>
+</html>

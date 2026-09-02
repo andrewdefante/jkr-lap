@@ -48,70 +48,115 @@
     document.getElementById('date-picker').value = today();
 
     function drawBoxWhisker(container, d) {
-      const W = 400, H = 44, PAD = 8, MAX_K = 15;
-      const scale = (v) => PAD + (v / MAX_K) * (W - PAD * 2);
+      const W = 400, H = 52, PAD = 20, MAX_K = 15;
+      const scale = (v) => PAD + (Math.min(v, MAX_K) / MAX_K) * (W - PAD * 2);
 
       const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       svg.setAttribute('width', W);
       svg.setAttribute('height', H);
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
-      const wLow = scale(d.whisker_low ?? 0);
-      const q1x  = scale(d.q1 ?? 0);
-      const medx = scale(d.median ?? 0);
-      const q3x  = scale(d.q3 ?? 0);
+      const wLow  = scale(d.whisker_low ?? 0);
+      const q1x   = scale(d.q1 ?? 0);
+      const medx  = scale(d.median ?? 0);
+      const q3x   = scale(d.q3 ?? 0);
       const wHigh = scale(d.whisker_high ?? MAX_K);
 
+      // Whisker line
       const wLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       wLine.setAttribute('x1', wLow); wLine.setAttribute('x2', wHigh);
-      wLine.setAttribute('y1', 32); wLine.setAttribute('y2', 32);
+      wLine.setAttribute('y1', 38); wLine.setAttribute('y2', 38);
       wLine.setAttribute('stroke', '#185FA5'); wLine.setAttribute('stroke-width', '1.5');
       svg.appendChild(wLine);
 
+      // Whisker end caps
       for (const x of [wLow, wHigh]) {
         const cap = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         cap.setAttribute('x1', x); cap.setAttribute('x2', x);
-        cap.setAttribute('y1', 26); cap.setAttribute('y2', 38);
+        cap.setAttribute('y1', 32); cap.setAttribute('y2', 44);
         cap.setAttribute('stroke', '#185FA5'); cap.setAttribute('stroke-width', '1.5');
         svg.appendChild(cap);
       }
 
+      // IQR box
       const box = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      box.setAttribute('x', q1x); box.setAttribute('y', 24);
+      box.setAttribute('x', q1x); box.setAttribute('y', 30);
       box.setAttribute('width', Math.max(q3x - q1x, 2));
       box.setAttribute('height', 16);
       box.setAttribute('fill', '#E6F1FB'); box.setAttribute('stroke', '#185FA5');
       box.setAttribute('stroke-width', '1.5'); box.setAttribute('rx', '2');
       svg.appendChild(box);
 
+      // Median line
       const med = document.createElementNS('http://www.w3.org/2000/svg', 'line');
       med.setAttribute('x1', medx); med.setAttribute('x2', medx);
-      med.setAttribute('y1', 24); med.setAttribute('y2', 40);
+      med.setAttribute('y1', 30); med.setAttribute('y2', 46);
       med.setAttribute('stroke', '#185FA5'); med.setAttribute('stroke-width', '2');
       svg.appendChild(med);
 
-      const labels = [
+      // Build label positions with collision detection
+      const labelData = [
         { x: wLow,  v: d.whisker_low,  bold: false },
         { x: q1x,   v: d.q1,           bold: false },
         { x: medx,  v: d.median,       bold: true  },
         { x: q3x,   v: d.q3,           bold: false },
         { x: wHigh, v: d.whisker_high, bold: false },
       ];
-      for (const lb of labels) {
+
+      // Nudge labels apart — iterate until no collisions or max passes
+      const MIN_GAP = 22;
+      const MAX_PASSES = 20;
+
+      for (let pass = 0; pass < MAX_PASSES; pass++) {
+        let moved = false;
+        for (let i = 0; i < labelData.length - 1; i++) {
+          const a = labelData[i];
+          const b = labelData[i + 1];
+          const gap = b.x - a.x;
+          if (gap < MIN_GAP) {
+            const nudge = (MIN_GAP - gap) / 2;
+            a.x -= nudge;
+            b.x += nudge;
+            moved = true;
+          }
+        }
+        // Clamp to SVG bounds
+        for (const lb of labelData) {
+          lb.x = Math.max(PAD, Math.min(W - PAD, lb.x));
+        }
+        if (!moved) break;
+      }
+
+      // Draw connector tick from nudged label down to true plot position
+      const trueX = [wLow, q1x, medx, q3x, wHigh];
+      labelData.forEach((lb, i) => {
+        const tx = trueX[i];
+        if (Math.abs(lb.x - tx) > 2) {
+          const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+          tick.setAttribute('x1', lb.x); tick.setAttribute('x2', tx);
+          tick.setAttribute('y1', 22); tick.setAttribute('y2', 28);
+          tick.setAttribute('stroke', '#c3c2b7'); tick.setAttribute('stroke-width', '0.8');
+          svg.appendChild(tick);
+        }
+      });
+
+      // Draw labels at nudged positions
+      labelData.forEach((lb) => {
         const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        t.setAttribute('x', lb.x); t.setAttribute('y', 14);
+        t.setAttribute('x', lb.x); t.setAttribute('y', 18);
         t.setAttribute('text-anchor', 'middle');
         t.setAttribute('font-size', lb.bold ? '11' : '10');
         t.setAttribute('font-weight', lb.bold ? '600' : '400');
         t.setAttribute('fill', lb.bold ? '#185FA5' : '#52514e');
         t.textContent = Number(lb.v ?? 0).toFixed(1);
         svg.appendChild(t);
-      }
+      });
 
+      // Actual K dot
       if (d.actual_k != null) {
         const ax = scale(d.actual_k);
         const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        dot.setAttribute('cx', ax); dot.setAttribute('cy', 32);
+        dot.setAttribute('cx', ax); dot.setAttribute('cy', 38);
         dot.setAttribute('r', 5);
         dot.setAttribute('fill', '#D85A30'); dot.setAttribute('stroke', 'white');
         dot.setAttribute('stroke-width', '1.5');

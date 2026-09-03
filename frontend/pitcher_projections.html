@@ -14,7 +14,7 @@
     .pitcher-name { font-weight: 500; font-size: 14px; }
     .pitcher-meta { font-size: 12px; color: #52514e; }
     .plot-container { flex: 1; position: relative; }
-    .proj-label { min-width: 120px; text-align: right; font-size: 13px; font-weight: 500; color: #185FA5; }
+    .proj-label { min-width: 160px; text-align: right; font-size: 13px; font-weight: 500; color: #185FA5; }
     .detail-row { display: none; background: #f9f9f8; padding: 12px 60px;
                   border-bottom: 0.5px solid #e1e0d9; }
     .detail-row.open { display: flex; gap: 48px; }
@@ -237,6 +237,10 @@
                 <div style="text-align:center;">
                   <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">Proj</div>
                   <div style="font-size:14px; font-weight:600; color:#185FA5;">${Number(d.proj ?? 0).toFixed(1)}</div>
+                </div>
+                <div style="text-align:center;">
+                  <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">±SD</div>
+                  <div style="font-size:14px; font-weight:500; color:#52514e;">${d.proj_sd != null ? Number(d.proj_sd).toFixed(1) : '—'}</div>
                 </div>
                 ${d.actual_k != null ? `
                 <div style="text-align:center;">

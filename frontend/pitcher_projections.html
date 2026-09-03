@@ -14,7 +14,7 @@
     .pitcher-name { font-weight: 500; font-size: 14px; }
     .pitcher-meta { font-size: 12px; color: #52514e; }
     .plot-container { flex: 1; position: relative; }
-    .proj-label { min-width: 70px; text-align: right; font-size: 13px; font-weight: 500; color: #185FA5; }
+    .proj-label { min-width: 120px; text-align: right; font-size: 13px; font-weight: 500; color: #185FA5; }
     .detail-row { display: none; background: #f9f9f8; padding: 12px 60px;
                   border-bottom: 0.5px solid #e1e0d9; }
     .detail-row.open { display: flex; gap: 48px; }
@@ -152,21 +152,15 @@
         svg.appendChild(t);
       });
 
-      // Actual K dot
+      // Actual K line
       if (d.actual_k != null) {
         const ax = scale(d.actual_k);
-        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        dot.setAttribute('cx', ax); dot.setAttribute('cy', 38);
-        dot.setAttribute('r', 5);
-        dot.setAttribute('fill', '#D85A30'); dot.setAttribute('stroke', 'white');
-        dot.setAttribute('stroke-width', '1.5');
-        svg.appendChild(dot);
-        const at = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        at.setAttribute('x', ax); at.setAttribute('y', H - 1);
-        at.setAttribute('text-anchor', 'middle');
-        at.setAttribute('font-size', '9'); at.setAttribute('fill', '#D85A30');
-        at.textContent = `${d.actual_k}K`;
-        svg.appendChild(at);
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', ax); line.setAttribute('x2', ax);
+        line.setAttribute('y1', 26); line.setAttribute('y2', 50);
+        line.setAttribute('stroke', '#D85A30');
+        line.setAttribute('stroke-width', '2.5');
+        svg.appendChild(line);
       }
 
       container.appendChild(svg);
@@ -227,19 +221,41 @@
           return;
         }
 
+        data.sort((a, b) => {
+          if (!a.game_time_iso) return 1;
+          if (!b.game_time_iso) return -1;
+          return a.game_time_iso.localeCompare(b.game_time_iso);
+        });
+
         data.forEach((d, i) => {
           const row = document.createElement('div');
           row.className = 'pitcher-row';
+          const timeStr = d.game_time_pt ? ` · ${d.game_time_pt}` : '';
+          const projLabel = `
+            <div class="proj-label">
+              <div style="display:flex; gap:16px; align-items:baseline; justify-content:flex-end;">
+                <div style="text-align:center;">
+                  <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">Proj</div>
+                  <div style="font-size:14px; font-weight:600; color:#185FA5;">${Number(d.proj ?? 0).toFixed(1)}</div>
+                </div>
+                ${d.actual_k != null ? `
+                <div style="text-align:center;">
+                  <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">Actual</div>
+                  <div style="font-size:14px; font-weight:600; color:#D85A30;">${d.actual_k}</div>
+                </div>` : ''}
+              </div>
+            </div>
+          `;
           row.innerHTML = `
             <img class="headshot"
               src="https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_68,q_auto:best/v1/people/${d.pitcher_id}/headshot/67/current"
               alt="${d.pitcher_name}" onerror="this.src='https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_68,q_auto:best/v1/people/0/headshot/67/current'">
             <div class="pitcher-info">
               <div class="pitcher-name">${d.pitcher_name}</div>
-              <div class="pitcher-meta">${d.team_abbrev} vs ${d.opp_abbrev} · ${d.pitcher_side} · ${d.pitch_hand ?? '?'}HP</div>
+              <div class="pitcher-meta">${d.team_abbrev} vs ${d.opp_abbrev} · ${d.pitcher_side} · ${d.pitch_hand ?? '?'}HP${timeStr}</div>
             </div>
             <div class="plot-container" id="plot-${i}"></div>
-            <div class="proj-label">${Number(d.proj ?? 0).toFixed(1)} Ks</div>
+            ${projLabel}
           `;
 
           const detail = document.createElement('div');

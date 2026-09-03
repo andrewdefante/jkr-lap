@@ -100,7 +100,7 @@ def get_full_schedule(season: int, game_type: str = "R") -> list[dict]:
         "season": season,
         "gameType": game_type,
         "hydrate": "probablePitcher",
-        "fields": "dates,date,games,gamePk,gameType,status,detailedState,teams,"
+        "fields": "dates,date,games,gamePk,gameType,gameDate,status,detailedState,teams,"
                   "away,home,team,id,name,score,probablePitcher,fullName"
     }
 
@@ -120,6 +120,7 @@ def get_full_schedule(season: int, game_type: str = "R") -> list[dict]:
             games.append({
                 "game_pk": game["gamePk"],
                 "game_date": date["date"],
+                "game_time_utc": game.get("gameDate"),
                 "status": game.get("status", {}).get("detailedState"),
                 "away_team_id": away_team.get("id"),
                 "away_team_name": away_team.get("name"),
@@ -162,14 +163,16 @@ def update_statuses(season: int, game_type: str = "R", db=None) -> dict:
             away_team_id, away_team_name, away_team_abbrev,
             home_score, away_score,
             home_probable_pitcher_id, home_probable_pitcher_name,
-            away_probable_pitcher_id, away_probable_pitcher_name
+            away_probable_pitcher_id, away_probable_pitcher_name,
+            game_time_utc
         ) VALUES (
             :game_pk, :game_date, :game_type, :season, :status,
             :home_team_id, :home_team_name, :home_team_abbrev,
             :away_team_id, :away_team_name, :away_team_abbrev,
             :home_score, :away_score,
             :home_probable_pitcher_id, :home_probable_pitcher_name,
-            :away_probable_pitcher_id, :away_probable_pitcher_name
+            :away_probable_pitcher_id, :away_probable_pitcher_name,
+            :game_time_utc
         )
         ON CONFLICT (game_pk) DO UPDATE SET
             status = EXCLUDED.status,
@@ -179,12 +182,14 @@ def update_statuses(season: int, game_type: str = "R", db=None) -> dict:
             home_probable_pitcher_name = EXCLUDED.home_probable_pitcher_name,
             away_probable_pitcher_id = EXCLUDED.away_probable_pitcher_id,
             away_probable_pitcher_name = EXCLUDED.away_probable_pitcher_name,
+            game_time_utc = EXCLUDED.game_time_utc,
             updated_at = NOW()
         WHERE mlb.games.status IS DISTINCT FROM EXCLUDED.status
            OR mlb.games.home_score IS DISTINCT FROM EXCLUDED.home_score
            OR mlb.games.away_score IS DISTINCT FROM EXCLUDED.away_score
            OR mlb.games.home_probable_pitcher_id IS DISTINCT FROM EXCLUDED.home_probable_pitcher_id
            OR mlb.games.away_probable_pitcher_id IS DISTINCT FROM EXCLUDED.away_probable_pitcher_id
+           OR mlb.games.game_time_utc IS DISTINCT FROM EXCLUDED.game_time_utc
     """)
 
     updated = 0
@@ -207,6 +212,7 @@ def update_statuses(season: int, game_type: str = "R", db=None) -> dict:
             "home_probable_pitcher_name": game["home_probable_pitcher_name"],
             "away_probable_pitcher_id":   game["away_probable_pitcher_id"],
             "away_probable_pitcher_name": game["away_probable_pitcher_name"],
+            "game_time_utc": game["game_time_utc"],
         })
         updated += result.rowcount
 

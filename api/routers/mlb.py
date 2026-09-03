@@ -634,6 +634,7 @@ def pitcher_game_log(
 def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
     from sqlalchemy import text
     from datetime import date as dt
+    from zoneinfo import ZoneInfo
 
     target = date or dt.today().isoformat()
 
@@ -645,7 +646,7 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
         ),
         today_starters AS (
             SELECT
-                g.game_pk, g.game_date,
+                g.game_pk, g.game_date, g.game_time_utc,
                 g.home_probable_pitcher_id AS home_pid,
                 g.home_probable_pitcher_name AS home_name,
                 g.home_team_id, g.home_team_abbrev,
@@ -659,17 +660,22 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
                    OR g.away_probable_pitcher_id IS NOT NULL)
         ),
         starters AS (
-            SELECT game_pk, home_pid AS pitcher_id, home_name AS pitcher_name,
+            SELECT game_pk, game_time_utc, home_pid AS pitcher_id, home_name AS pitcher_name,
                    home_team_id AS team_id, home_team_abbrev AS team_abbrev,
                    away_team_id AS opp_team_id, away_team_abbrev AS opp_abbrev,
                    'home' AS pitcher_side, 'away' AS opp_side
             FROM today_starters WHERE home_pid IS NOT NULL
             UNION ALL
-            SELECT game_pk, away_pid, away_name,
+            SELECT game_pk, game_time_utc, away_pid, away_name,
                    away_team_id, away_team_abbrev,
                    home_team_id, home_team_abbrev,
                    'away', 'home'
             FROM today_starters WHERE away_pid IS NOT NULL
+        ),
+        actuals AS (
+            SELECT bp.game_pk, bp.player_id AS pitcher_id, bp.strikeouts AS actual_k
+            FROM mlb.boxscore_pitching bp
+            WHERE bp.games_started = 1
         ),
         pitcher_game_stats AS (
             SELECT bp.player_id AS pitcher_id, bp.game_pk, g.game_date,
@@ -763,6 +769,7 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             SELECT
                 s.pitcher_name, s.team_abbrev, ph.pitch_hand, s.opp_abbrev,
                 s.pitcher_id, s.game_pk, s.pitcher_side, s.opp_side,
+                s.game_time_utc, act.actual_k,
                 p3w.pitcher_k_pct_3w, p3w.pitcher_avg_bf_3w, p3w.pitcher_starts_3w,
                 p3w.pitcher_k_pct_sd_3starts, p3w.pitcher_bf_sd_3starts,
                 p3w.pitcher_last3_k, p3w.pitcher_last3_bf, p3w.pitcher_last3_dates,
@@ -793,10 +800,12 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             LEFT JOIN pitcher_last3 p3w ON p3w.pitcher_id = s.pitcher_id AND p3w.side = s.pitcher_side
             LEFT JOIN opp_last3 opp ON opp.opp_team_id = s.opp_team_id
                 AND opp.opp_side = s.opp_side AND opp.pitch_hand = ph.pitch_hand
+            LEFT JOIN actuals act ON act.game_pk = s.game_pk AND act.pitcher_id = s.pitcher_id
         )
         SELECT
             pitcher_name, team_abbrev, pitch_hand, opp_abbrev,
             pitcher_id, pitcher_side, opp_side,
+            game_time_utc, actual_k,
             ROUND(pit::numeric, 2) AS pit,
             ROUND(opp_proj::numeric, 2) AS opp,
             ROUND(proj::numeric, 2) AS proj,
@@ -815,7 +824,21 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
         ORDER BY proj DESC NULLS LAST
     """), {"target_date": target}).mappings().all()
 
-    return [dict(r) for r in rows]
+    pt = ZoneInfo("America/Los_Angeles")
+    result = []
+    for row in rows:
+        r = dict(row)
+        game_time_utc = r.pop("game_time_utc", None)
+        if game_time_utc is not None:
+            dt_pt = game_time_utc.astimezone(pt)
+            r["game_time_pt"] = dt_pt.strftime("%-I:%M %p PT")
+            r["game_time_iso"] = game_time_utc.isoformat()
+        else:
+            r["game_time_pt"] = None
+            r["game_time_iso"] = None
+        result.append(r)
+
+    return result
 
 
 @router.get("/batter-tendencies")

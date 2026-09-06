@@ -1048,37 +1048,45 @@ def render_homepage(yesterday: date, today: date, db) -> str:
                   else f"{p['team_abbrev']} @ {p['opp_abbrev']}"
         hand = p.get('pitch_hand') or '?'
         time_str = p.get('game_time_pt') or ''
+        meta = f"{matchup} · {p['pitcher_side']} · {hand}HP" + (f" · {time_str}" if time_str else '')
         proj_val = f"{float(p['proj']):.1f}" if p.get('proj') is not None else '—'
-        sd_val = f"±{float(p['proj_sd']):.1f}" if p.get('proj_sd') is not None else ''
+        sd_val = f"{float(p['proj_sd']):.1f}" if p.get('proj_sd') is not None else '—'
+        actual_k = p.get('actual_k')
 
-        svg_str = draw_box_whisker_svg(p, width=380, actual_k=p.get('actual_k'))
+        svg_str = draw_box_whisker_svg(p, width=400, actual_k=actual_k)
+
+        actual_stat = f"""
+                <div style="text-align:center;">
+                  <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">Actual</div>
+                  <div style="font-size:14px; font-weight:600; color:#cc2200;">{actual_k:.0f}</div>
+                </div>""" if actual_k is not None else ''
 
         bw_rows.append(f"""
-        <tr>
-          <td style="padding:6px 12px 6px 0; white-space:nowrap; vertical-align:middle;">
-            <div style="font-weight:500; font-size:13px;">{p['pitcher_name']}</div>
-            <div style="font-size:11px; color:#555;">{matchup} · {hand}HP
-              {f'· {time_str} PT' if time_str else ''}</div>
-          </td>
-          <td style="padding:6px 0; vertical-align:middle;">
-            {svg_str}
-          </td>
-          <td style="padding:6px 0 6px 16px; text-align:right; vertical-align:middle; white-space:nowrap;">
-            <div style="font-size:14px; font-weight:600; color:#1a1a1a;">{proj_val} Ks</div>
-            <div style="font-size:11px; color:#888;">{sd_val}</div>
-          </td>
-        </tr>
-        """)
+        <div style="display:flex; align-items:center; gap:12px; padding:10px 0;
+                    border-bottom:0.5px solid #e1e0d9; font-family:system-ui,sans-serif;">
+          <div style="min-width:170px;">
+            <div style="font-size:14px; font-weight:500; color:#1a1a1a;">{p['pitcher_name']}</div>
+            <div style="font-size:12px; color:#555;">{meta}</div>
+          </div>
+          <div style="flex:1; min-width:0;">{svg_str}</div>
+          <div style="min-width:150px; text-align:right;">
+            <div style="display:flex; gap:16px; align-items:baseline; justify-content:flex-end;">
+              <div style="text-align:center;">
+                <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">Proj</div>
+                <div style="font-size:14px; font-weight:600; color:#1a1a1a;">{proj_val}</div>
+              </div>
+              <div style="text-align:center;">
+                <div style="font-size:9px; color:#888; text-transform:uppercase; letter-spacing:.04em;">±SD</div>
+                <div style="font-size:14px; font-weight:500; color:#555;">{sd_val}</div>
+              </div>{actual_stat}
+            </div>
+          </div>
+        </div>""")
 
     pitcher_bw_html = f"""
-<table style="width:100%; border-collapse:collapse;">
-  <colgroup>
-    <col style="width:180px">
-    <col>
-    <col style="width:80px">
-  </colgroup>
-  {''.join(bw_rows) if bw_rows else '<tr><td colspan="3" style="color:#888; font-size:13px; padding:8px 0;">No starters found for today.</td></tr>'}
-</table>
+<div style="margin-bottom:6px;">
+  {''.join(bw_rows) if bw_rows else '<div style="color:#888; font-size:13px; padding:8px 0;">No starters found for today.</div>'}
+</div>
 <div class="footnote" style="margin-top:6px;margin-bottom:20px">
     Box = IQR (25th–75th percentile) · Whiskers = 1st–99th percentile ·
     Center line = projected median · <span style="color:#cc2200;">Red line = actual observed Ks</span> ·

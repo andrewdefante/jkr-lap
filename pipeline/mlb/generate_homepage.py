@@ -340,205 +340,314 @@ def get_batter_call_results(yesterday: date, db) -> dict:
     }
 
 
-def get_pitcher_k_variance(db, days: int = 45) -> dict:
-    """Per-pitcher K stddev from recent starts. Returns {pitcher_id: {std_k, starts, avg_k}}."""
-    rows = db.execute(text("""
-        SELECT da.player_id,
-               STDDEV(da.actual_k) as std_k,
-               COUNT(*)            as starts,
-               AVG(da.actual_k)    as avg_k
-        FROM mlb.daily_actuals da
-        WHERE da.player_type = 'pitcher'
-        AND da.game_date >= CURRENT_DATE - :days
-        AND da.actual_k IS NOT NULL
-        GROUP BY da.player_id
-        HAVING COUNT(*) >= 3
-    """), {"days": days}).mappings().all()
-    return {r['player_id']: {
-        'std_k':  float(r['std_k'] or 2.5),
-        'starts': int(r['starts']),
-        'avg_k':  float(r['avg_k']),
-    } for r in rows}
-
-
-def get_pitcher_records(db, today) -> tuple[dict, dict]:
+def get_pitcher_boxwhisker(db, today) -> list:
     """
-    Compute pitcher and opposing-team records against the 80% confidence line.
-
-    1. Pitcher record vs 80% line (actual_k >= line_80 = W, else L)
-    2. Pitcher record vs proj_ks_locked (actual_k >= proj = W, else L)
-    3. Opposing (batting) team record vs 80% line, aggregated across every
-       start they faced this season. A team WINS when its batters hold the
-       pitcher UNDER the line (actual_k < line_80) — fewer Ks is good for
-       hitters — and LOSES when the pitcher meets/exceeds the line.
-
-    80% line formula: GREATEST(1, ROUND(proj - 1.28 * SQRT(proj)))
-
-    Returns (pitcher_records, team_records):
-        pitcher_records: {pitcher_id: {'p_vs_line': '7-1', 'p_vs_proj': '5-3'}}
-        team_records:    {opp_abbrev: '45-8'}   # W-L as the batting team
-    """
-    pitcher_rows = db.execute(text("""
-        WITH poisson_80 AS (
-            SELECT
-                dp.pitcher_id,
-                COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj,
-                da.actual_k,
-                GREATEST(1, ROUND(
-                    COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) -
-                    1.28 * SQRT(COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn))
-                )::numeric)::int as line_80
-            FROM mlb.daily_projections dp
-            JOIN mlb.daily_actuals da
-                ON da.player_id = dp.pitcher_id
-                AND da.game_date = dp.snapshot_date
-                AND da.player_type = 'pitcher'
-            WHERE dp.proj_ks_locked IS NOT NULL
-            AND da.actual_k IS NOT NULL
-            AND dp.snapshot_date >= '2026-05-20'
-        )
-        SELECT
-            pitcher_id,
-            SUM(CASE WHEN actual_k >= line_80 THEN 1 ELSE 0 END) as p_w_line,
-            SUM(CASE WHEN actual_k <  line_80 THEN 1 ELSE 0 END) as p_l_line,
-            SUM(CASE WHEN actual_k >= proj    THEN 1 ELSE 0 END) as p_w_proj,
-            SUM(CASE WHEN actual_k <  proj    THEN 1 ELSE 0 END) as p_l_proj
-        FROM poisson_80
-        GROUP BY pitcher_id
-    """), {"today": today}).mappings().all()
-
-    team_rows = db.execute(text("""
-        WITH poisson_80 AS (
-            SELECT
-                dp.opp_abbrev,
-                da.actual_k,
-                GREATEST(1, ROUND(
-                    COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) -
-                    1.28 * SQRT(COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn))
-                )::numeric)::int as line_80
-            FROM mlb.daily_projections dp
-            JOIN mlb.daily_actuals da
-                ON da.player_id = dp.pitcher_id
-                AND da.game_date = dp.snapshot_date
-                AND da.player_type = 'pitcher'
-            WHERE dp.proj_ks_locked IS NOT NULL
-            AND da.actual_k IS NOT NULL
-            AND dp.snapshot_date >= '2026-05-20'
-        )
-        SELECT
-            opp_abbrev,
-            SUM(CASE WHEN actual_k <  line_80 THEN 1 ELSE 0 END) as opp_w,
-            SUM(CASE WHEN actual_k >= line_80 THEN 1 ELSE 0 END) as opp_l
-        FROM poisson_80
-        GROUP BY opp_abbrev
-    """), {"today": today}).mappings().all()
-
-    pitcher_records = {
-        r['pitcher_id']: {
-            'p_vs_line': f"{r['p_w_line']}-{r['p_l_line']}",
-            'p_vs_proj': f"{r['p_w_proj']}-{r['p_l_proj']}",
-        }
-        for r in pitcher_rows
-    }
-    team_records = {
-        r['opp_abbrev']: f"{r['opp_w']}-{r['opp_l']}"
-        for r in team_rows
-    }
-    return pitcher_records, team_records
-
-
-def _line_80(proj_ks: float | None) -> int | None:
-    """80%-confidence K floor: GREATEST(1, ROUND(proj - 1.28 * SQRT(proj)))."""
-    if not proj_ks or proj_ks <= 0:
-        return None
-    return max(1, round(proj_ks - 1.28 * (proj_ks ** 0.5)))
-
-
-def get_team_k_rates(db, season: int = 2026) -> dict:
-    """
-    Returns dict of team_abbrev -> k_pct (as %)
-    K% = SUM(strikeouts) / SUM(plate_appearances) for all batters on that team
+    Box/whisker K projection data for today's starters.
+    Same query as the /mlb/pitcher-boxwhisker endpoint (api/routers/mlb.py).
     """
     rows = db.execute(text("""
+        WITH pitcher_hand AS (
+            SELECT pitcher_id, MAX(pitch_hand) AS pitch_hand
+            FROM mlb.at_bats WHERE pitch_hand IS NOT NULL
+            GROUP BY pitcher_id
+        ),
+        today_starters AS (
+            SELECT
+                g.game_pk, g.game_date, g.game_time_utc,
+                g.home_probable_pitcher_id AS home_pid,
+                g.home_probable_pitcher_name AS home_name,
+                g.home_team_id, g.home_team_abbrev,
+                g.away_team_id, g.away_team_abbrev,
+                g.away_probable_pitcher_id AS away_pid,
+                g.away_probable_pitcher_name AS away_name
+            FROM mlb.games g
+            WHERE g.game_date = :today
+              AND g.game_type = 'R'
+              AND (g.home_probable_pitcher_id IS NOT NULL
+                   OR g.away_probable_pitcher_id IS NOT NULL)
+        ),
+        starters AS (
+            SELECT game_pk, game_time_utc,
+                   home_pid AS pitcher_id, home_name AS pitcher_name,
+                   home_team_id AS team_id, home_team_abbrev AS team_abbrev,
+                   away_team_id AS opp_team_id, away_team_abbrev AS opp_abbrev,
+                   'home' AS pitcher_side, 'away' AS opp_side
+            FROM today_starters WHERE home_pid IS NOT NULL
+            UNION ALL
+            SELECT game_pk, game_time_utc,
+                   away_pid, away_name,
+                   away_team_id, away_team_abbrev,
+                   home_team_id, home_team_abbrev,
+                   'away', 'home'
+            FROM today_starters WHERE away_pid IS NOT NULL
+        ),
+        actuals AS (
+            SELECT bp.game_pk, bp.player_id AS pitcher_id, bp.strikeouts AS actual_k
+            FROM mlb.boxscore_pitching bp
+            WHERE bp.games_started = 1
+        ),
+        pitcher_game_stats AS (
+            SELECT bp.player_id AS pitcher_id, bp.game_pk, g.game_date,
+                bp.strikeouts AS pitcher_ks, bp.batters_faced AS pitcher_bf,
+                bp.strikeouts::numeric / NULLIF(bp.batters_faced, 0) AS pitcher_k_pct,
+                CASE WHEN g.home_team_id = bp.team_id THEN 'home' ELSE 'away' END AS side
+            FROM mlb.boxscore_pitching bp
+            JOIN mlb.games g ON g.game_pk = bp.game_pk
+            WHERE g.game_date::date BETWEEN (:today)::date - INTERVAL '60 days'
+                                        AND (:today)::date - INTERVAL '1 day'
+              AND g.season = 2026 AND g.game_type = 'R'
+              AND bp.games_started = 1 AND bp.batters_faced > 0
+        ),
+        pitcher_ranked AS (
+            SELECT pgs.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY pitcher_id, side ORDER BY game_date DESC, game_pk DESC
+                ) AS rn
+            FROM pitcher_game_stats pgs
+        ),
+        pitcher_last3 AS (
+            SELECT pitcher_id, side,
+                SUM(pitcher_ks)::numeric / NULLIF(SUM(pitcher_bf), 0) AS pitcher_k_pct_3w,
+                ROUND(AVG(pitcher_bf), 2) AS pitcher_avg_bf_3w,
+                COUNT(*) AS pitcher_starts_3w,
+                ROUND(STDDEV_SAMP(pitcher_k_pct), 4) AS pitcher_k_pct_sd_3starts,
+                ROUND(STDDEV_SAMP(pitcher_bf), 2) AS pitcher_bf_sd_3starts,
+                STRING_AGG(pitcher_ks::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS pitcher_last3_k,
+                STRING_AGG(pitcher_bf::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS pitcher_last3_bf,
+                STRING_AGG(game_date::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS pitcher_last3_dates
+            FROM pitcher_ranked WHERE rn <= 3
+            GROUP BY pitcher_id, side
+        ),
+        historical_starters AS (
+            SELECT DISTINCT bp.game_pk, g.game_date, bp.player_id AS pitcher_id,
+                bp.team_id AS pitcher_team_id,
+                CASE WHEN g.home_team_id = bp.team_id THEN g.away_team_id
+                     ELSE g.home_team_id END AS opp_team_id,
+                CASE WHEN g.home_team_id = bp.team_id THEN 'away' ELSE 'home' END AS opp_side,
+                ph.pitch_hand
+            FROM mlb.boxscore_pitching bp
+            JOIN mlb.games g ON g.game_pk = bp.game_pk
+            JOIN pitcher_hand ph ON ph.pitcher_id = bp.player_id
+            WHERE g.game_date::date BETWEEN (:today)::date - INTERVAL '60 days'
+                                        AND (:today)::date - INTERVAL '1 day'
+              AND g.season = 2026 AND g.game_type = 'R'
+              AND bp.games_started = 1 AND bp.batters_faced > 0
+        ),
+        opp_game_vs_sp_raw AS (
+            SELECT hs.opp_team_id, hs.opp_side, hs.game_pk, hs.game_date,
+                hs.pitcher_id, hs.pitch_hand,
+                COUNT(*) AS pa,
+                SUM(CASE WHEN ab.event IN ('Strikeout','Strikeout - DP') THEN 1 ELSE 0 END) AS k
+            FROM historical_starters hs
+            JOIN mlb.at_bats ab ON ab.game_pk = hs.game_pk AND ab.pitcher_id = hs.pitcher_id
+            WHERE ab.event NOT IN (
+                'Runner Out','Caught Stealing 2B','Caught Stealing 3B',
+                'Wild Pitch','Passed Ball','Pickoff','Caught Stealing Home',
+                'Pickoff Caught Stealing 2B','Pickoff Caught Stealing 3B',
+                'Pickoff Caught Stealing Home'
+            )
+            GROUP BY hs.opp_team_id, hs.opp_side, hs.game_pk, hs.game_date,
+                     hs.pitcher_id, hs.pitch_hand
+        ),
+        opp_game_vs_sp AS (
+            SELECT opp_team_id, opp_side, game_pk, game_date, pitch_hand,
+                   SUM(pa) AS pa, SUM(k) AS k
+            FROM opp_game_vs_sp_raw
+            GROUP BY opp_team_id, opp_side, game_pk, game_date, pitch_hand
+        ),
+        opp_ranked AS (
+            SELECT og.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY opp_team_id, opp_side, pitch_hand
+                    ORDER BY game_date DESC, game_pk DESC
+                ) AS rn
+            FROM opp_game_vs_sp og
+        ),
+        opp_last3 AS (
+            SELECT opp_team_id, opp_side, pitch_hand,
+                SUM(k)::numeric / NULLIF(SUM(pa), 0) AS opp_k_pct,
+                ROUND(AVG(pa), 2) AS opp_avg_pa,
+                COUNT(*) AS opp_games,
+                ROUND(STDDEV_SAMP(k::numeric / NULLIF(pa, 0)), 4) AS opp_k_pct_sd_3games,
+                ROUND(STDDEV_SAMP(pa), 2) AS opp_pa_sd_3games,
+                STRING_AGG(pa::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS last3_pa,
+                STRING_AGG(k::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS last3_k,
+                STRING_AGG(game_date::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS last3_dates
+            FROM opp_ranked WHERE rn <= 3
+            GROUP BY opp_team_id, opp_side, pitch_hand
+        ),
+        projections AS (
+            SELECT
+                s.pitcher_name, s.team_abbrev, ph.pitch_hand, s.opp_abbrev,
+                s.pitcher_id, s.game_pk, s.game_time_utc,
+                s.pitcher_side, s.opp_side, act.actual_k,
+                p3w.pitcher_k_pct_3w, p3w.pitcher_avg_bf_3w, p3w.pitcher_starts_3w,
+                p3w.pitcher_k_pct_sd_3starts, p3w.pitcher_bf_sd_3starts,
+                p3w.pitcher_last3_k, p3w.pitcher_last3_bf, p3w.pitcher_last3_dates,
+                opp.opp_k_pct, opp.opp_avg_pa,
+                opp.opp_k_pct_sd_3games, opp.opp_pa_sd_3games,
+                opp.last3_pa, opp.last3_k, opp.last3_dates,
+                p3w.pitcher_k_pct_3w * p3w.pitcher_avg_bf_3w AS pit,
+                opp.opp_k_pct * opp.opp_avg_pa AS opp_proj,
+                (
+                    p3w.pitcher_k_pct_3w * p3w.pitcher_avg_bf_3w
+                    + COALESCE(opp.opp_k_pct * opp.opp_avg_pa,
+                               p3w.pitcher_k_pct_3w * p3w.pitcher_avg_bf_3w)
+                ) / 2.0 AS proj,
+                SQRT(
+                    POWER(COALESCE(p3w.pitcher_avg_bf_3w, 21.0), 2)
+                        * POWER(COALESCE(p3w.pitcher_k_pct_sd_3starts, 0.05), 2)
+                    + POWER(COALESCE(p3w.pitcher_k_pct_3w, 0.22), 2)
+                        * POWER(COALESCE(p3w.pitcher_bf_sd_3starts, 4.5), 2)
+                ) AS sd_pit,
+                SQRT(
+                    POWER(COALESCE(opp.opp_avg_pa, 21.0), 2)
+                        * POWER(COALESCE(opp.opp_k_pct_sd_3games, 0.05), 2)
+                    + POWER(COALESCE(opp.opp_k_pct, 0.22), 2)
+                        * POWER(COALESCE(opp.opp_pa_sd_3games, 4.5), 2)
+                ) AS sd_opp
+            FROM starters s
+            LEFT JOIN pitcher_hand ph ON ph.pitcher_id = s.pitcher_id
+            LEFT JOIN pitcher_last3 p3w
+                ON p3w.pitcher_id = s.pitcher_id AND p3w.side = s.pitcher_side
+            LEFT JOIN opp_last3 opp
+                ON opp.opp_team_id = s.opp_team_id
+                AND opp.opp_side = s.opp_side
+                AND opp.pitch_hand = ph.pitch_hand
+            LEFT JOIN actuals act ON act.game_pk = s.game_pk AND act.pitcher_id = s.pitcher_id
+        )
         SELECT
-            CASE WHEN g.home_team_id = bb.team_id
-                 THEN g.home_team_abbrev
-                 ELSE g.away_team_abbrev END as team_abbrev,
-            ROUND(SUM(bb.strikeouts)::numeric /
-                  NULLIF(SUM(bb.plate_appearances), 0) * 100, 1) as k_pct
-        FROM mlb.boxscore_batting bb
-        JOIN mlb.games g ON g.game_pk = bb.game_pk
-        WHERE g.season = :season
-        AND g.game_type = 'R'
-        AND bb.plate_appearances > 0
-        GROUP BY 1
-        ORDER BY k_pct DESC
-    """), {"season": season}).mappings().all()
-    return {r['team_abbrev']: float(r['k_pct']) for r in rows}
+            pitcher_name, team_abbrev, pitch_hand, opp_abbrev,
+            pitcher_id, pitcher_side, opp_side, game_time_utc, actual_k,
+            ROUND(pit::numeric, 2) AS pit,
+            ROUND(opp_proj::numeric, 2) AS opp,
+            ROUND(proj::numeric, 2) AS proj,
+            ROUND((0.5 * SQRT(POWER(sd_pit,2) + POWER(sd_opp,2)))::numeric, 2) AS proj_sd,
+            ROUND(GREATEST(0, proj - 2.576*0.5*SQRT(POWER(sd_pit,2)+POWER(sd_opp,2)))::numeric, 2) AS whisker_low,
+            ROUND(GREATEST(0, proj - 0.674*0.5*SQRT(POWER(sd_pit,2)+POWER(sd_opp,2)))::numeric, 2) AS q1,
+            ROUND(proj::numeric, 2) AS median,
+            ROUND((proj + 0.674*0.5*SQRT(POWER(sd_pit,2)+POWER(sd_opp,2)))::numeric, 2) AS q3,
+            ROUND((proj + 2.576*0.5*SQRT(POWER(sd_pit,2)+POWER(sd_opp,2)))::numeric, 2) AS whisker_high,
+            pitcher_k_pct_3w, pitcher_avg_bf_3w, pitcher_starts_3w,
+            pitcher_last3_k, pitcher_last3_bf, pitcher_last3_dates,
+            opp_k_pct, opp_avg_pa, opp_k_pct_sd_3games, opp_pa_sd_3games,
+            last3_pa, last3_k, last3_dates
+        FROM projections
+        ORDER BY game_time_utc ASC NULLS LAST, proj DESC NULLS LAST
+    """), {"today": str(today)}).mappings().all()
+
+    pt = ZoneInfo("America/Los_Angeles")
+    result = []
+    for row in rows:
+        r = dict(row)
+        game_time_utc = r.pop("game_time_utc", None)
+        if game_time_utc is not None:
+            r["game_time_pt"] = game_time_utc.astimezone(pt).strftime("%-I:%M %p")
+        else:
+            r["game_time_pt"] = None
+        for k, v in r.items():
+            if hasattr(v, '__float__'):
+                r[k] = float(v)
+        result.append(r)
+    return result
+
+
+def draw_box_whisker_svg(p: dict, width: int = 380, actual_k=None) -> str:
+    """
+    Inline SVG box/whisker plot for a pitcher's K projection.
+    Black/white color scheme with a red line for actual observed Ks.
+    """
+    H = 52
+    PAD = 20
+    MAX_K = 15
+
+    def scale(v):
+        v = min(float(v or 0), MAX_K)
+        return PAD + (v / MAX_K) * (width - PAD * 2)
+
+    wLow  = scale(p.get('whisker_low', 0))
+    q1x   = scale(p.get('q1', 0))
+    medx  = scale(p.get('median', 0))
+    q3x   = scale(p.get('q3', 0))
+    wHigh = scale(p.get('whisker_high', MAX_K))
+
+    svg = [f'<svg width="{width}" height="{H}" viewBox="0 0 {width} {H}" '
+           f'xmlns="http://www.w3.org/2000/svg" style="display:block">']
+
+    # Whisker line
+    svg.append(f'<line x1="{wLow:.1f}" x2="{wHigh:.1f}" y1="36" y2="36" '
+               f'stroke="#1a1a1a" stroke-width="1.5"/>')
+
+    # End caps
+    for x in [wLow, wHigh]:
+        svg.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="30" y2="42" '
+                   f'stroke="#1a1a1a" stroke-width="1.5"/>')
+
+    # IQR box
+    box_w = max(q3x - q1x, 2)
+    svg.append(f'<rect x="{q1x:.1f}" y="28" width="{box_w:.1f}" height="16" '
+               f'fill="white" stroke="#1a1a1a" stroke-width="1.5" rx="2"/>')
+
+    # Median line
+    svg.append(f'<line x1="{medx:.1f}" x2="{medx:.1f}" y1="28" y2="44" '
+               f'stroke="#1a1a1a" stroke-width="2"/>')
+
+    # Labels with collision detection
+    labels = [
+        {'x': wLow,  'v': p.get('whisker_low', 0),  'bold': False},
+        {'x': q1x,   'v': p.get('q1', 0),            'bold': False},
+        {'x': medx,  'v': p.get('median', 0),         'bold': True},
+        {'x': q3x,   'v': p.get('q3', 0),            'bold': False},
+        {'x': wHigh, 'v': p.get('whisker_high', 0),  'bold': False},
+    ]
+    true_x = [lb['x'] for lb in labels]
+
+    MIN_GAP = 24
+    for _ in range(20):
+        moved = False
+        for i in range(len(labels) - 1):
+            gap = labels[i+1]['x'] - labels[i]['x']
+            if gap < MIN_GAP:
+                nudge = (MIN_GAP - gap) / 2
+                labels[i]['x'] -= nudge
+                labels[i+1]['x'] += nudge
+                moved = True
+        for lb in labels:
+            lb['x'] = max(PAD, min(width - PAD, lb['x']))
+        if not moved:
+            break
+
+    # Connector ticks
+    for i, lb in enumerate(labels):
+        tx = true_x[i]
+        if abs(lb['x'] - tx) > 2:
+            svg.append(f'<line x1="{lb["x"]:.1f}" x2="{tx:.1f}" y1="20" y2="26" '
+                       f'stroke="#aaa" stroke-width="0.8"/>')
+
+    # Label text
+    for lb in labels:
+        fw = '600' if lb['bold'] else '400'
+        fill = '#1a1a1a' if lb['bold'] else '#555'
+        fs = '11' if lb['bold'] else '10'
+        val = f"{float(lb['v']):.1f}" if lb['v'] is not None else '—'
+        svg.append(f'<text x="{lb["x"]:.1f}" y="16" text-anchor="middle" '
+                   f'font-size="{fs}" font-weight="{fw}" fill="{fill}" '
+                   f'font-family="system-ui,sans-serif">{val}</text>')
+
+    # Actual K red vertical line
+    if actual_k is not None:
+        ax = scale(actual_k)
+        svg.append(f'<line x1="{ax:.1f}" x2="{ax:.1f}" y1="24" y2="46" '
+                   f'stroke="#cc2200" stroke-width="2.5"/>')
+        svg.append(f'<text x="{ax:.1f}" y="{H-1}" text-anchor="middle" '
+                   f'font-size="9" font-weight="600" fill="#cc2200" '
+                   f'font-family="system-ui,sans-serif">{actual_k:.0f}K</text>')
+
+    svg.append('</svg>')
+    return ''.join(svg)
 
 
 def get_today_outlook(today: date, db) -> dict:
-    raw_pitchers = db.execute(text("""
-        SELECT
-            dp.pitcher_id,
-            dp.pitcher_name,
-            dp.opp_abbrev,
-            CASE WHEN dp.team_abbrev = dp.home_team_abbrev THEN 'vs' ELSE '@' END as venue_prefix,
-            dp.proj_k_pct,
-            dp.proj_hr_pct,
-            dp.proj_ks_6inn,
-            dp.proj_ks_f5,
-            dp.k_floor_mc,
-            dp.k_avg_mc,
-            COALESCE(dp.proj_ks_locked, dp.proj_ks_6inn) as proj_ks_locked,
-            dp.proj_ks_locked IS NOT NULL as has_locked_proj,
-            ROUND(pk.pk_plus::numeric,1)     as pk_plus,
-            ROUND(phr.phr_plus::numeric,1)   as phr_plus
-        FROM mlb.daily_projections dp
-        LEFT JOIN mlb.pk_overall pk
-            ON pk.pitcher_id = dp.pitcher_id AND pk.season = 2026
-        LEFT JOIN mlb.phr_overall phr
-            ON phr.pitcher_id = dp.pitcher_id AND phr.season = 2026
-        WHERE dp.snapshot_date = (SELECT MAX(snapshot_date) FROM mlb.daily_projections)
-        ORDER BY dp.pitcher_name
-    """), {"today": today}).mappings().all()
-
-    variance_data = get_pitcher_k_variance(db)
-    pitcher_record_data, team_record_data = get_pitcher_records(db, today)
-    team_k_rates = get_team_k_rates(db)
-
-    pitchers = []
-    for p in raw_pitchers:
-        row = dict(p)
-        proj_ks      = float(row.get('proj_ks_6inn') or 0)
-        proj_ks_lock = float(row.get('proj_ks_locked') or proj_ks)
-        pitcher_id   = row.get('pitcher_id')
-        row['opp_k_pct'] = team_k_rates.get(row.get('opp_abbrev'))
-
-        # Confidence score 0-100
-        pv = variance_data.get(pitcher_id, {'std_k': 2.5, 'starts': 0})
-        std_k  = pv['std_k']
-        starts = pv['starts']
-        sample_conf   = min(1.0, starts / 12)
-        variance_conf = max(0.0, 1.0 - (std_k - 1.5) / 3.5)
-        lineup_conf   = 1.0 if row.get('has_locked_proj') else 0.7
-        stability_conf = 1.0 - min(0.5, abs(proj_ks - proj_ks_lock) / max(proj_ks, 1))
-        confidence = round((sample_conf * 0.25 + variance_conf * 0.40 +
-                            lineup_conf * 0.15 + stability_conf * 0.20) * 100)
-        row['confidence'] = confidence
-        row['std_k']      = round(std_k, 2)
-        row['line_80']    = _line_80(proj_ks_lock)
-
-        records = dict(pitcher_record_data.get(pitcher_id) or {})
-        opp_record = team_record_data.get(row.get('opp_abbrev'))
-        if opp_record:
-            records['opp_vs_line'] = opp_record
-        row['records'] = records or None
-
-        pitchers.append(row)
-
-    pitchers.sort(key=lambda p: -(float(p.get('proj_ks_6inn') or 0)))
-
     batters = db.execute(text("""
         SELECT
             dbp.batter_id,
@@ -589,7 +698,6 @@ def get_today_outlook(today: date, db) -> dict:
     """), {"today": today}).mappings().all()
 
     return {
-        "pitchers":   [dict(p) for p in pitchers],
         "batters":    [dict(b) for b in batters],
         "mismatches": [dict(m) for m in mismatches],
     }
@@ -664,22 +772,6 @@ def render_homepage(yesterday: date, today: date, db) -> str:
     def fmt(v, dec=1):
         return f"{v:.{dec}f}" if v is not None else "—"
 
-    def _record_cell(records, key):
-        """W-L record cell, colored by outcome; '—' if untracked or <3 starts."""
-        if not records:
-            return '—'
-        record_str = records.get(key)
-        if not record_str:
-            return '—'
-        try:
-            w, l = (int(x) for x in record_str.split('-'))
-        except (ValueError, AttributeError):
-            return '—'
-        if w + l < 3:
-            return '—'
-        color = '#1b5e20' if w > l else ('#b71c1c' if l > w else '#888')
-        return f'<span style="color:{color};font-weight:700">{record_str}</span>'
-
     def pct_fmt(v):
         return f"{v*100:.1f}%" if v is not None else "—"
 
@@ -689,12 +781,6 @@ def render_homepage(yesterday: date, today: date, db) -> str:
         if val >= 102: return '#2e7d32'
         if val >= 95:  return '#e65100'
         return '#b71c1c'
-
-    def opp_k_pct_color(val):
-        if val is None: return '#888'
-        if val > 24: return '#1b5e20'
-        if val < 20: return '#b71c1c'
-        return '#1a1a1a'
 
     def pct_diff_color(today_val, league_val):
         try:
@@ -953,33 +1039,52 @@ def render_homepage(yesterday: date, today: date, db) -> str:
             </table>
         </div>"""
 
-    # ── Today's outlook ───────────────────────────────────────────────────────
-    pitcher_rows = ""
-    for p in outlook['pitchers']:
-        opp = p.get('opp_abbrev', '')
-        venue = p.get('venue_prefix', 'vs')
-        opp_str = (f" <span style='color:#888;font-size:10px;font-weight:400'>{venue} {opp}</span>"
-                   if opp else "")
-        records = p.get('records')
-        line_80 = p.get('line_80')
-        pitcher_rows += f"""
-        <tr style="border-bottom:1px solid #eee">
-            <td style="padding:4px 8px;font-weight:700">{p.get('pitcher_name','—')}{opp_str}</td>
-            <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'p_vs_line')}</td>
-            <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'p_vs_proj')}</td>
-            <td style="padding:4px 8px;text-align:right">{_record_cell(records, 'opp_vs_line')}</td>
-            <td style="padding:4px 8px;text-align:right;color:#555">{line_80 if line_80 is not None else '—'}</td>
-            <td style="padding:4px 8px;text-align:right;color:{opp_k_pct_color(p.get('opp_k_pct'))}">
-                {f"{p.get('opp_k_pct'):.1f}%" if p.get('opp_k_pct') is not None else '—'}
-            </td>
-            <td style="padding:4px 8px;text-align:right;color:{score_color(p.get('pk_plus'))}">{p.get('pk_plus','—')}</td>
-            <td style="padding:4px 8px;text-align:right">
-                {fmt(p.get('k_avg_mc'),1) if p.get('k_avg_mc') is not None else '—'}
-            </td>
-            <td style="padding:4px 8px;text-align:right;color:#888">
-                {fmt(p.get('k_floor_mc'),1) if p.get('k_floor_mc') is not None else '—'}
-            </td>
-        </tr>"""
+    # ── Today's outlook — pitcher box/whisker projections ────────────────────
+    bw_pitchers = get_pitcher_boxwhisker(db, today)
+
+    bw_rows = []
+    for p in bw_pitchers:
+        matchup = f"{p['team_abbrev']} vs {p['opp_abbrev']}" if p['pitcher_side'] == 'home' \
+                  else f"{p['team_abbrev']} @ {p['opp_abbrev']}"
+        hand = p.get('pitch_hand') or '?'
+        time_str = p.get('game_time_pt') or ''
+        proj_val = f"{float(p['proj']):.1f}" if p.get('proj') is not None else '—'
+        sd_val = f"±{float(p['proj_sd']):.1f}" if p.get('proj_sd') is not None else ''
+
+        svg_str = draw_box_whisker_svg(p, width=380, actual_k=p.get('actual_k'))
+
+        bw_rows.append(f"""
+        <tr>
+          <td style="padding:6px 12px 6px 0; white-space:nowrap; vertical-align:middle;">
+            <div style="font-weight:500; font-size:13px;">{p['pitcher_name']}</div>
+            <div style="font-size:11px; color:#555;">{matchup} · {hand}HP
+              {f'· {time_str} PT' if time_str else ''}</div>
+          </td>
+          <td style="padding:6px 0; vertical-align:middle;">
+            {svg_str}
+          </td>
+          <td style="padding:6px 0 6px 16px; text-align:right; vertical-align:middle; white-space:nowrap;">
+            <div style="font-size:14px; font-weight:600; color:#1a1a1a;">{proj_val} Ks</div>
+            <div style="font-size:11px; color:#888;">{sd_val}</div>
+          </td>
+        </tr>
+        """)
+
+    pitcher_bw_html = f"""
+<table style="width:100%; border-collapse:collapse;">
+  <colgroup>
+    <col style="width:180px">
+    <col>
+    <col style="width:80px">
+  </colgroup>
+  {''.join(bw_rows) if bw_rows else '<tr><td colspan="3" style="color:#888; font-size:13px; padding:8px 0;">No starters found for today.</td></tr>'}
+</table>
+<div class="footnote" style="margin-top:6px;margin-bottom:20px">
+    Box = IQR (25th–75th percentile) · Whiskers = 1st–99th percentile ·
+    Center line = projected median · <span style="color:#cc2200;">Red line = actual observed Ks</span> ·
+    Projection blends pitcher's last 3 starts (same home/away side) with opponent's last 3 games
+    vs same-handedness starters · 60-day lookback
+</div>"""
 
     batter_rows = ""
     for b in outlook['batters'][:12]:
@@ -1268,32 +1373,7 @@ def render_homepage(yesterday: date, today: date, db) -> str:
 
 <div style="font-size:13px;font-weight:700;letter-spacing:0.08em;margin-bottom:8px">
     PITCHER STRIKEOUT PROJECTIONS</div>
-<table style="width:100%;font-size:12px;margin-bottom:20px">
-    <thead><tr>
-        <th style="text-align:left">PITCHER</th>
-        <th>P vs LINE</th>
-        <th>P vs PROJ</th>
-        <th>OPP vs LINE</th>
-        <th>80% LINE</th>
-        <th>OPP K%</th><th>pK+</th>
-        <th>MC Ks<div style="font-size:9px;font-weight:400;color:#888">Regression avg</div></th>
-        <th>MC FLOOR</th>
-    </tr></thead>
-    <tbody>{pitcher_rows if pitcher_rows else
-        '<tr><td colspan="9" style="padding:8px;color:#888">No pitcher projections for today yet.</td></tr>'
-    }</tbody>
-</table>
-
-<div class="footnote" style="margin-top:6px;margin-bottom:20px">
-    P vs LINE = pitcher W-L when actual Ks ≥ our 80% confidence floor ·
-    P vs PROJ = pitcher W-L when actual Ks ≥ projection ·
-    OPP vs LINE = opposing team's batter W-L vs our 80% line ·
-    W = pitcher stayed under line (good for batters) · L = pitcher exceeded line ·
-    80% LINE = K total our model projects with ≥80% confidence ·
-    OPP K% = opposing team's season strikeout rate (all batters) ·
-    MC Ks = Ridge regression average K projection (point-in-time features, retrained daily) ·
-    MC FLOOR = Monte Carlo simulated K floor, ~90% historical hit rate (walk-forward validated)
-</div>
+{pitcher_bw_html}
 
 <div style="font-size:13px;font-weight:700;letter-spacing:0.08em;margin-bottom:8px">
     HIGH TOTAL BASE PROJECTIONS</div>

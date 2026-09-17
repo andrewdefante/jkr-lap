@@ -709,6 +709,21 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             FROM pitcher_ranked WHERE rn <= 3
             GROUP BY pitcher_id, side
         ),
+        pitcher_last3_any_side AS (
+            SELECT pitcher_id,
+                STRING_AGG(pitcher_ks::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS pitcher_last3_k_all,
+                STRING_AGG(pitcher_bf::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS pitcher_last3_bf_all,
+                STRING_AGG(game_date::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS pitcher_last3_dates_all
+            FROM (
+                SELECT pgs.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY pitcher_id ORDER BY game_date DESC, game_pk DESC
+                    ) AS rn
+                FROM pitcher_game_stats pgs
+            ) x
+            WHERE rn <= 3
+            GROUP BY pitcher_id
+        ),
         historical_starters AS (
             SELECT DISTINCT bp.game_pk, g.game_date, bp.player_id AS pitcher_id,
                 bp.team_id AS pitcher_team_id,
@@ -765,6 +780,24 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             FROM opp_ranked WHERE rn <= 3
             GROUP BY opp_team_id, opp_side, pitch_hand
         ),
+        opp_last3_any_side AS (
+            SELECT opp_team_id, pitch_hand,
+                SUM(k)::numeric / NULLIF(SUM(pa), 0) AS opp_k_pct_all,
+                ROUND(AVG(pa), 2) AS opp_avg_pa_all,
+                STRING_AGG(pa::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS last3_pa_all,
+                STRING_AGG(k::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS last3_k_all,
+                STRING_AGG(game_date::text, ', ' ORDER BY game_date DESC, game_pk DESC) AS last3_dates_all
+            FROM (
+                SELECT og.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY opp_team_id, pitch_hand
+                        ORDER BY game_date DESC, game_pk DESC
+                    ) AS rn
+                FROM opp_game_vs_sp og
+            ) x
+            WHERE rn <= 3
+            GROUP BY opp_team_id, pitch_hand
+        ),
         projections AS (
             SELECT
                 s.pitcher_name, s.team_abbrev, ph.pitch_hand, s.opp_abbrev,
@@ -776,6 +809,8 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
                 opp.opp_k_pct, opp.opp_avg_pa,
                 opp.opp_k_pct_sd_3games, opp.opp_pa_sd_3games,
                 opp.last3_pa, opp.last3_k, opp.last3_dates,
+                p3a.pitcher_last3_k_all, p3a.pitcher_last3_bf_all, p3a.pitcher_last3_dates_all,
+                oa.last3_pa_all, oa.last3_k_all, oa.last3_dates_all,
                 p3w.pitcher_k_pct_3w * p3w.pitcher_avg_bf_3w AS pit,
                 opp.opp_k_pct * opp.opp_avg_pa AS opp_proj,
                 (
@@ -800,6 +835,10 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             LEFT JOIN pitcher_last3 p3w ON p3w.pitcher_id = s.pitcher_id AND p3w.side = s.pitcher_side
             LEFT JOIN opp_last3 opp ON opp.opp_team_id = s.opp_team_id
                 AND opp.opp_side = s.opp_side AND opp.pitch_hand = ph.pitch_hand
+            LEFT JOIN pitcher_last3_any_side p3a ON p3a.pitcher_id = s.pitcher_id
+            LEFT JOIN opp_last3_any_side oa
+                ON oa.opp_team_id = s.opp_team_id
+                AND oa.pitch_hand = ph.pitch_hand
             LEFT JOIN actuals act ON act.game_pk = s.game_pk AND act.pitcher_id = s.pitcher_id
         )
         SELECT
@@ -819,7 +858,9 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             pitcher_k_pct_sd_3starts, pitcher_bf_sd_3starts,
             pitcher_last3_k, pitcher_last3_bf, pitcher_last3_dates,
             opp_k_pct, opp_avg_pa, opp_k_pct_sd_3games, opp_pa_sd_3games,
-            last3_pa, last3_k, last3_dates
+            last3_pa, last3_k, last3_dates,
+            pitcher_last3_k_all, pitcher_last3_bf_all, pitcher_last3_dates_all,
+            last3_pa_all, last3_k_all, last3_dates_all
         FROM projections
         ORDER BY proj DESC NULLS LAST
     """), {"target_date": target}).mappings().all()

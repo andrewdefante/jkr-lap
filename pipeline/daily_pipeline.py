@@ -12,6 +12,7 @@ Schedule:
   11:15 AM ET daily    — Juiced+ 2 rebuild
   11:30 AM ET daily    — Goose+ 3 rebuild
   7:00 AM ET Mondays   — Batter tendencies (weekly)
+  12:30 AM PT daily    — NFL fetch (games, plays, stats, snaps, team metrics)
   11:00 PM ET Sundays  — NASCAR fetch + transform
   11:15 PM ET Sundays  — F1 fetch + transform (race weekends)
 
@@ -21,6 +22,7 @@ Usage:
     PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now pk-phr         # run pK+/pHR+ now
     PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now goose3         # run Goose+3 now
     PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now weather        # run weather now
+    PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now nfl            # run NFL fetch now
     PYTHONPATH=/app python3 /pipeline/daily_pipeline.py --now all            # run everything now
 """
 
@@ -579,6 +581,19 @@ def run_f1_sunday():
         db.close()
 
 
+def run_nfl_nightly():
+    """Fetch and rebuild NFL data (games, plays, player stats, snap counts, team metrics).
+    Runs every night — fetch_nfl.py deletes+reinserts plays/stats for the season and
+    upserts games/players, so this picks up corrections and new games each run."""
+    from datetime import date
+    season = date.today().year
+    # NFL season runs Sept-Jan; before September, the current season is still last year's
+    if date.today().month < 9:
+        season -= 1
+    _run_script("NFL Nightly Fetch", "/pipeline/nfl/fetch_nfl.py",
+                ["--season", str(season)])
+
+
 def main():
     parser = argparse.ArgumentParser(description="Daily sports data pipeline scheduler")
     parser.add_argument(
@@ -590,7 +605,7 @@ def main():
                  "mc-calibration",
                  "weather", "runners", "kalshi", "actuals", "homepage",
                  "batter-tendencies", "daily-projections", "mc-projection", "lineups",
-                 "update-status", "team-defense", "nascar", "f1", "integrity", "player-map", "all"],
+                 "update-status", "team-defense", "nascar", "f1", "nfl", "integrity", "player-map", "all"],
         help="Run a specific pipeline immediately instead of scheduling",
     )
     args = parser.parse_args()
@@ -663,6 +678,8 @@ def main():
             run_nascar_sunday()
         if args.now in ("f1", "all"):
             run_f1_sunday()
+        if args.now in ("nfl", "all"):
+            run_nfl_nightly()
         return
 
     # Scheduled mode (all times PT = America/Los_Angeles)
@@ -802,6 +819,12 @@ def main():
         id="batter_tendencies", name="Batter tendencies weekly rebuild (Mon 4am PT)",
         misfire_grace_time=3600)
 
+    # 12:30am PT nightly — NFL fetch (replaces diffs, adds new rows)
+    scheduler.add_job(run_nfl_nightly,
+        CronTrigger(hour=0, minute=30, timezone=PT),
+        id="nfl_nightly", name="NFL nightly data fetch (12:30am PT)",
+        misfire_grace_time=3600)
+
     log.info("Joker Lap Scheduler starting... (all times PT = America/Los_Angeles)")
     log.info("  Actuals:            11:15pm PT nightly")
     log.info("  Final status:       11:30pm PT nightly")
@@ -814,6 +837,7 @@ def main():
     log.info("  Homepage + email:    9am / 12pm / 4pm PT")
     log.info("  Status updates:      7am–11:30pm PT every 30 min (offset :15/:45)")
     log.info("  Batter tendencies:   Mon 4:00am PT (weekly)")
+    log.info("  NFL nightly fetch:   12:30am PT nightly")
 
     try:
         scheduler.start()

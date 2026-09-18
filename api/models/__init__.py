@@ -24,3 +24,7 @@ from models.nascar import (
     NASCARStageResult, NASCARDriverStat, NASCARDriver,
     NASCARLiveSnapshot
 )
+from models.nfl import (
+    NFLGame, NFLPlay, NFLPlayerStatsWeekly, NFLSnapCount,
+    NFLPlayer, NFLTeamMetricsWeekly
+)

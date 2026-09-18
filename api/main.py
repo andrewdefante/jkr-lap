@@ -4,7 +4,7 @@ from sqlalchemy import text
 from database import engine
 from models.base import Base
 import models
-from routers import health, mlb, nascar, f1
+from routers import health, mlb, nascar, f1, nfl
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 import os
@@ -26,7 +26,7 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup():
     with engine.connect() as conn:
-        for schema in ["mlb", "f1", "nascar"]:
+        for schema in ["mlb", "f1", "nascar", "nfl"]:
             conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
         conn.commit()
     Base.metadata.create_all(bind=engine)
@@ -35,6 +35,7 @@ app.include_router(health.router)
 app.include_router(mlb.router, prefix="/mlb", tags=["MLB"])
 app.include_router(nascar.router, prefix="/nascar", tags=["NASCAR"])
 app.include_router(f1.router)
+app.include_router(nfl.router)
 
 @app.get("/", include_in_schema=False)
 def homepage():
@@ -66,3 +67,7 @@ async def f1_dashboard():
 @app.get("/pitcher-projections", include_in_schema=False)
 async def pitcher_projections():
     return FileResponse("/frontend/pitcher_projections.html")
+
+@app.get("/nfl-matchups", include_in_schema=False)
+async def nfl_matchups_page():
+    return FileResponse("/frontend/nfl_matchups.html")

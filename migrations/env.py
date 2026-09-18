@@ -37,7 +37,7 @@ def run_migrations_online():
         configuration, prefix="sqlalchemy.", poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        for schema in ["mlb", "f1", "nascar"]:
+        for schema in ["mlb", "f1", "nascar", "nfl"]:
             connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
         connection.commit()
         context.configure(

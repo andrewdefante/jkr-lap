@@ -13,8 +13,8 @@
     .header h1 { font-size: 16px; font-weight: 500; }
     .header a { font-size: 13px; color: #555; text-decoration: none; }
     .header a:hover { color: #1a1a1a; }
-    input[type=date] { font-size: 13px; border: 1px solid #ddd;
-                       padding: 4px 8px; border-radius: 4px; }
+    select { font-size: 13px; border: 1px solid #ddd;
+             padding: 4px 8px; border-radius: 4px; background: white; }
     button { font-size: 13px; padding: 4px 12px; border: 1px solid #ddd;
              border-radius: 4px; background: white; cursor: pointer; }
     button:hover { background: #f0f0f0; }
@@ -82,8 +82,11 @@
 <div class="header">
   <a href="/mlb-dashboard">← Dashboard</a>
   <h1>NFL Matchups</h1>
-  <input type="date" id="date-picker">
-  <button onclick="loadData()">Load</button>
+  <select id="season-picker" onchange="loadWeeks()">
+    <option value="2026">2026</option>
+    <option value="2025">2025</option>
+  </select>
+  <select id="week-picker" onchange="loadData()"></select>
   <span id="status"></span>
 </div>
 
@@ -91,11 +94,6 @@
 
 <script>
 const API = '';
-
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-document.getElementById('date-picker').value = today();
 
 function fmt(v, decimals=1) {
   if (v == null) return '—';
@@ -185,9 +183,12 @@ function buildGameCard(g, idx) {
   const away = g.away_stats || {};
   const { homeHTML, centerHTML, awayHTML } = buildStatRows(home, away);
 
-  const spreadStr = g.spread_line != null
-    ? `Spread: ${g.spread_line > 0 ? '+' : ''}${g.spread_line} · O/U: ${g.total_line ?? '—'}`
-    : '';
+  // spread_line is from the home team's perspective — negative means home is favored
+  const spreadStr = g.spread_line != null ? (() => {
+    const favored = g.spread_line < 0 ? g.home_team : g.away_team;
+    const line = Math.abs(g.spread_line).toFixed(1);
+    return `${favored} -${line} · O/U ${g.total_line ?? '—'}`;
+  })() : '';
 
   const scoreStr = g.home_score != null
     ? `${g.away_team} ${g.away_score} @ ${g.home_team} ${g.home_score} · Final`
@@ -232,8 +233,9 @@ function buildGameCard(g, idx) {
       </div>
 
       <div style="padding:6px 16px 8px;font-size:10px;color:#aaa;">
-        Stats = last 3 games · EPA = expected points added per play ·
-        Blitz % = proxy (high-pressure pass plays)
+        Spread = Vegas point spread (team listed is favored by that many points) ·
+        O/U = total points over/under · Stats = last 3 weeks same season ·
+        EPA = expected points added per play · Blitz % = proxy (high-pressure pass plays)
       </div>
     </div>
   `;
@@ -244,32 +246,59 @@ function toggleWeather(idx) {
   panel.classList.toggle('open');
 }
 
+async function loadWeeks() {
+  const season = document.getElementById('season-picker').value;
+  const status = document.getElementById('status');
+  status.textContent = 'Loading...';
+
+  try {
+    const res = await fetch(`${API}/nfl/weeks?season=${season}`);
+    const weeks = await res.json();
+
+    const picker = document.getElementById('week-picker');
+    picker.innerHTML = weeks.map(w =>
+      `<option value="${w.week}">Week ${w.week} (${w.game_count} games)</option>`
+    ).join('');
+
+    // Default to the most recent week with games on/before today, else the last week listed
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const current = [...weeks].reverse().find(w => w.week_start <= todayStr);
+    picker.value = (current || weeks[weeks.length - 1])?.week || 1;
+
+    loadData();
+  } catch (e) {
+    status.textContent = 'Error loading weeks';
+    console.error(e);
+  }
+}
+
 async function loadData() {
-  const date = document.getElementById('date-picker').value;
+  const season = document.getElementById('season-picker').value;
+  const week = document.getElementById('week-picker').value;
   const status = document.getElementById('status');
   const container = document.getElementById('games');
   status.textContent = 'Loading...';
   container.innerHTML = '';
 
   try {
-    const res = await fetch(`${API}/nfl/matchups?date=${date}`);
+    const res = await fetch(`${API}/nfl/matchups?season=${season}&week=${week}`);
     const data = await res.json();
 
     if (!data.length) {
-      container.innerHTML = '<p style="color:#888;font-size:13px;padding:1rem 0;">No NFL games found for this date.</p>';
+      container.innerHTML = '<p style="color:#888;font-size:13px;padding:1rem 0;">No NFL games found for this week.</p>';
       status.textContent = '';
       return;
     }
 
     container.innerHTML = data.map((g, i) => buildGameCard(g, i)).join('');
-    status.textContent = `${data.length} game${data.length !== 1 ? 's' : ''} · ${date}`;
+    status.textContent = `${data.length} game${data.length !== 1 ? 's' : ''} · ${season} Week ${week}`;
   } catch(e) {
     status.textContent = 'Error loading data';
     console.error(e);
   }
 }
 
-loadData();
+loadWeeks();
 </script>
 </body>
 </html>

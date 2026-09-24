@@ -10,14 +10,44 @@ router = APIRouter(prefix="/nfl", tags=["NFL"])
 PT = ZoneInfo("America/Los_Angeles")
 
 
+def _current_season() -> int:
+    """NFL season runs Sept-Jan; before September, the current season is still last year's."""
+    today = dt.today()
+    return today.year if today.month >= 9 else today.year - 1
+
+
+@router.get("/weeks")
+def nfl_weeks(season: int = None, db: Session = Depends(get_db)):
+    """List weeks with games for a season, for populating the week picker."""
+    season = season or _current_season()
+    weeks = db.execute(text("""
+        SELECT week, MIN(game_date) AS week_start, COUNT(*) AS game_count
+        FROM nfl.games
+        WHERE season = :s
+          AND game_type IN ('REG', 'POST', 'WC', 'DIV', 'CON', 'SB')
+        GROUP BY week
+        ORDER BY week
+    """), {"s": season}).mappings().all()
+    return [dict(r) for r in weeks]
+
+
 @router.get("/matchups")
-def nfl_matchups(date: str = None, db: Session = Depends(get_db)):
+def nfl_matchups(week: int = None, season: int = None, db: Session = Depends(get_db)):
     """
-    Returns games for a given date with team matchup stats.
-    Rolling stats (EPA, run/pass splits, blitz proxy) use each team's last 3 games
-    played strictly before the target date.
+    Returns games for a given season/week with team matchup stats.
+    Rolling stats (EPA, run/pass splits, blitz proxy) use each team's last 3 weeks
+    played earlier in the same season.
     """
-    target = date or dt.today().isoformat()
+    season = season or _current_season()
+
+    if not week:
+        result = db.execute(text("""
+            SELECT MAX(week) FROM nfl.games
+            WHERE season = :s
+              AND game_type IN ('REG', 'POST', 'WC', 'DIV', 'CON', 'SB')
+              AND game_date <= CURRENT_DATE
+        """), {"s": season}).scalar()
+        week = result or 1
 
     games = db.execute(text("""
         SELECT game_id, season, week, game_date, game_datetime,
@@ -25,25 +55,24 @@ def nfl_matchups(date: str = None, db: Session = Depends(get_db)):
                roof, surface, temp, wind, stadium, location,
                spread_line, total_line, home_win
         FROM nfl.games
-        WHERE game_date = :d
+        WHERE season = :s AND week = :w
           AND game_type IN ('REG', 'POST', 'WC', 'DIV', 'CON', 'SB')
         ORDER BY game_datetime ASC NULLS LAST
-    """), {"d": target}).mappings().all()
+    """), {"s": season, "w": week}).mappings().all()
 
     if not games:
         return []
 
-    # Rolling last-3-games EPA/success-rate metrics per team (from nfl.team_metrics_weekly)
+    # Rolling last-3-weeks EPA/success-rate metrics per team, same season
+    # (from nfl.team_metrics_weekly — already has season/week, no join needed)
     team_stats = db.execute(text("""
         WITH ranked AS (
             SELECT tm.*,
                 ROW_NUMBER() OVER (
-                    PARTITION BY tm.team ORDER BY g.game_date DESC
+                    PARTITION BY tm.team ORDER BY tm.week DESC
                 ) AS rn
             FROM nfl.team_metrics_weekly tm
-            JOIN nfl.games g ON g.game_id = tm.game_id
-            WHERE tm.season IN (2025, 2026)
-              AND g.game_date < :d
+            WHERE tm.season = :s AND tm.week < :w
         )
         SELECT
             team,
@@ -61,14 +90,15 @@ def nfl_matchups(date: str = None, db: Session = Depends(get_db)):
         FROM ranked
         WHERE rn <= 3
         GROUP BY team
-    """), {"d": target}).mappings().all()
+    """), {"s": season, "w": week}).mappings().all()
 
-    # Rolling last-3-games run/pass split + blitz proxy per team, straight from nfl.plays.
-    # Ranked per-team-per-game (not a flat row LIMIT) so each team's own last 3 games
-    # are used regardless of how many games other teams have played.
+    # Rolling last-3-weeks run/pass split + blitz proxy per team, same season,
+    # straight from nfl.plays (already has season/week, no join needed).
+    # Ranked per-team-per-game (not a flat row LIMIT) so each team's own last 3
+    # weeks are used regardless of how many games other teams have played.
     play_splits = db.execute(text("""
         WITH game_off AS (
-            SELECT p.posteam AS team, p.game_id, g.game_date,
+            SELECT p.posteam AS team, p.game_id, p.week,
                 COUNT(*) AS total_plays,
                 SUM(CASE WHEN p.play_type = 'run' THEN 1 ELSE 0 END) AS run_plays,
                 SUM(CASE WHEN p.play_type = 'pass' THEN 1 ELSE 0 END) AS pass_plays,
@@ -76,16 +106,14 @@ def nfl_matchups(date: str = None, db: Session = Depends(get_db)):
                 AVG(CASE WHEN p.play_type = 'pass' AND p.complete_pass THEN p.yards_gained END) AS pass_yds,
                 AVG(CASE WHEN p.play_type = 'pass' THEN p.air_yards END) AS air_yards
             FROM nfl.plays p
-            JOIN nfl.games g ON g.game_id = p.game_id
             WHERE p.play_type IN ('run', 'pass')
               AND p.penalty IS NOT TRUE
-              AND p.season IN (2025, 2026)
-              AND g.game_date < :d
+              AND p.season = :s AND p.week < :w
               AND p.posteam IS NOT NULL
-            GROUP BY p.posteam, p.game_id, g.game_date
+            GROUP BY p.posteam, p.game_id, p.week
         ),
         game_def AS (
-            SELECT p.defteam AS team, p.game_id, g.game_date,
+            SELECT p.defteam AS team, p.game_id, p.week,
                 SUM(CASE WHEN p.play_type = 'pass' THEN 1 ELSE 0 END) AS def_pass_plays,
                 AVG(CASE WHEN p.play_type = 'run' THEN p.yards_gained END) AS rush_yds_allowed,
                 AVG(CASE WHEN p.play_type = 'pass' AND p.complete_pass THEN p.yards_gained END) AS pass_yds_allowed,
@@ -93,20 +121,18 @@ def nfl_matchups(date: str = None, db: Session = Depends(get_db)):
                 -- no PFF/snap-count pressure data available, so this is an approximation.
                 SUM(CASE WHEN p.play_type = 'pass' AND p.epa < -0.5 THEN 1 ELSE 0 END) AS blitz_plays
             FROM nfl.plays p
-            JOIN nfl.games g ON g.game_id = p.game_id
             WHERE p.play_type IN ('run', 'pass')
               AND p.penalty IS NOT TRUE
-              AND p.season IN (2025, 2026)
-              AND g.game_date < :d
+              AND p.season = :s AND p.week < :w
               AND p.defteam IS NOT NULL
-            GROUP BY p.defteam, p.game_id, g.game_date
+            GROUP BY p.defteam, p.game_id, p.week
         ),
         off_ranked AS (
-            SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY game_date DESC) AS rn
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY week DESC) AS rn
             FROM game_off
         ),
         def_ranked AS (
-            SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY game_date DESC) AS rn
+            SELECT *, ROW_NUMBER() OVER (PARTITION BY team ORDER BY week DESC) AS rn
             FROM game_def
         ),
         off_agg AS (
@@ -139,7 +165,7 @@ def nfl_matchups(date: str = None, db: Session = Depends(get_db)):
             ROUND(d.blitz_plays::numeric / NULLIF(d.def_pass_plays, 0) * 100, 1) AS blitz_proxy_pct
         FROM off_agg o
         JOIN def_agg d ON d.team = o.team
-    """), {"d": target}).mappings().all()
+    """), {"s": season, "w": week}).mappings().all()
 
     stats = {r['team']: dict(r) for r in team_stats}
     splits = {r['team']: dict(r) for r in play_splits}

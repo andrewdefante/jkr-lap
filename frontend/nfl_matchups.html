@@ -20,32 +20,54 @@
     button:hover { background: #f0f0f0; }
     #status { font-size: 12px; color: #888; }
 
-    .games-grid { display: flex; flex-direction: column; gap: 12px; }
+    .games-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 900px) {
+      .games-grid { grid-template-columns: repeat(2, 1fr); }
+    }
 
-    .game-card { background: white; border-radius: 8px;
-                 border: 1px solid #e8e8e6; overflow: hidden; }
+    .game-tile {
+      background: white;
+      border: 1px solid #e8e8e6;
+      border-radius: 8px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: border-color 0.1s, box-shadow 0.1s;
+      user-select: none;
+    }
+    .game-tile:hover { border-color: #bbb; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    .game-tile.active { border-color: #1a1a1a; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
-    .game-header { display: flex; align-items: center; justify-content: space-between;
-                   padding: 10px 16px; border-bottom: 1px solid #f0f0ee;
-                   background: #fafaf8; flex-wrap: wrap; gap: 8px; }
-    .matchup { font-size: 15px; font-weight: 600; letter-spacing: .01em; }
-    .matchup .at { color: #888; font-weight: 400; margin: 0 6px; }
-    .game-meta { font-size: 12px; color: #666; display: flex; gap: 12px;
-                 align-items: center; flex-wrap: wrap; }
-    .score { font-size: 13px; font-weight: 500; color: #1a1a1a; }
-    .spread { font-size: 12px; color: #888; }
+    .tile-teams { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+    .tile-away { color: #555; }
+    .tile-at { color: #aaa; margin: 0 4px; font-weight: 400; }
+    .tile-home { color: #1a1a1a; }
+    .tile-meta { font-size: 11px; color: #888; display: flex; gap: 8px; flex-wrap: wrap; }
+    .tile-score { font-weight: 500; color: #1a1a1a; }
+    .tile-spread { color: #555; }
+    .tile-expand-hint { font-size: 10px; color: #ccc; margin-top: 4px; }
+    .game-tile.active .tile-expand-hint { color: #888; }
 
-    .weather-toggle { font-size: 11px; color: #185FA5; cursor: pointer;
-                      text-decoration: underline; white-space: nowrap; }
-    .weather-panel { display: none; padding: 8px 16px; background: #f0f4fa;
-                     border-bottom: 1px solid #e0e8f4; font-size: 12px;
-                     color: #333; gap: 16px; flex-wrap: wrap; }
-    .weather-panel.open { display: flex; }
+    .detail-panel {
+      display: none;
+      background: white;
+      border: 1px solid #1a1a1a;
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      margin-bottom: 8px;
+      padding: 16px;
+    }
+    .detail-panel.open { display: block; }
+
     .weather-item { display: flex; gap: 4px; }
     .weather-label { color: #888; }
 
     .stats-grid { display: grid; grid-template-columns: 1fr auto 1fr;
-                  gap: 0; padding: 0; }
+                  gap: 0; padding: 0; max-width: 600px; margin: 0 auto; }
     .team-col { padding: 12px 16px; }
     .team-col.away { text-align: right; }
     .team-col.home { text-align: left; }
@@ -55,8 +77,6 @@
                    border-right: 1px solid #f0f0ee; }
 
     .team-name { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
-    .team-name.home { color: #1a1a1a; }
-    .team-name.away { color: #1a1a1a; }
 
     .stat-row { display: contents; }
     .stat-val { font-size: 13px; font-weight: 500; padding: 3px 0; }
@@ -90,7 +110,7 @@
   <span id="status"></span>
 </div>
 
-<div id="games" class="games-grid"></div>
+<div id="games"></div>
 
 <script>
 const API = '';
@@ -178,72 +198,112 @@ function buildStatRows(home, away) {
   return { homeHTML, centerHTML, awayHTML };
 }
 
-function buildGameCard(g, idx) {
-  const home = g.home_stats || {};
-  const away = g.away_stats || {};
-  const { homeHTML, centerHTML, awayHTML } = buildStatRows(home, away);
+// spread_line is from the home team's perspective — negative means home is favored
+function spreadStrFor(g) {
+  if (g.spread_line == null) return '';
+  const favored = g.spread_line < 0 ? g.home_team : g.away_team;
+  const line = Math.abs(g.spread_line).toFixed(1);
+  return `${favored} -${line} · O/U ${g.total_line ?? '—'}`;
+}
 
-  // spread_line is from the home team's perspective — negative means home is favored
-  const spreadStr = g.spread_line != null ? (() => {
-    const favored = g.spread_line < 0 ? g.home_team : g.away_team;
-    const line = Math.abs(g.spread_line).toFixed(1);
-    return `${favored} -${line} · O/U ${g.total_line ?? '—'}`;
-  })() : '';
-
-  const scoreStr = g.home_score != null
-    ? `${g.away_team} ${g.away_score} @ ${g.home_team} ${g.home_score} · Final`
-    : '';
-
-  const weatherHTML = buildWeatherPanel(g);
+function buildTile(g, idx) {
+  const spreadStr = spreadStrFor(g);
 
   return `
-    <div class="game-card">
-      <div class="game-header">
-        <div>
-          <div class="matchup">
-            ${g.away_team} <span class="at">@</span> ${g.home_team}
-          </div>
-          ${scoreStr ? `<div class="score" style="margin-top:2px">${scoreStr}</div>` : ''}
-        </div>
-        <div class="game-meta">
-          ${g.game_time_pt ? `<span>⏰ ${g.game_time_pt}</span>` : ''}
-          ${g.location ? `<span>📍 ${g.location}</span>` : ''}
-          ${spreadStr ? `<span class="spread">${spreadStr}</span>` : ''}
-          ${weatherHTML ? `<span class="weather-toggle" onclick="toggleWeather(${idx})">🌤 Weather</span>` : ''}
-        </div>
+    <div class="game-tile" id="tile-${idx}" onclick="toggleGame(${idx})">
+      <div class="tile-teams">
+        <span class="tile-away">${g.away_team}</span>
+        <span class="tile-at">@</span>
+        <span class="tile-home">${g.home_team}</span>
       </div>
-
-      <div class="weather-panel" id="weather-${idx}">
-        ${weatherHTML}
+      <div class="tile-meta">
+        <span>${g.game_time_pt || 'TBD'}</span>
+        ${g.home_score != null ? `<span class="tile-score">${g.away_score}–${g.home_score}</span>` : ''}
+        ${spreadStr ? `<span class="tile-spread">${spreadStr}</span>` : ''}
       </div>
-
-      <div class="stats-grid">
-        <div class="team-col away">
-          <div class="team-name away">${g.away_team}</div>
-          ${awayHTML}
-        </div>
-        <div class="divider-col">
-          <div style="font-size:10px;color:#ccc;margin-top:22px">vs</div>
-          ${centerHTML}
-        </div>
-        <div class="team-col home">
-          <div class="team-name home">${g.home_team}</div>
-          ${homeHTML}
-        </div>
-      </div>
-
-      <div style="padding:6px 16px 8px;font-size:10px;color:#aaa;">
-        Spread = Vegas point spread (team listed is favored by that many points) ·
-        O/U = total points over/under · Stats = last 3 weeks same season ·
-        EPA = expected points added per play · Blitz % = proxy (high-pressure pass plays)
-      </div>
+      <div class="tile-expand-hint">▾ tap to expand</div>
     </div>
   `;
 }
 
-function toggleWeather(idx) {
-  const panel = document.getElementById(`weather-${idx}`);
-  panel.classList.toggle('open');
+function buildDetailPanel(g) {
+  const home = g.home_stats || {};
+  const away = g.away_stats || {};
+  const { homeHTML, centerHTML, awayHTML } = buildStatRows(home, away);
+  const weatherHTML = buildWeatherPanel(g);
+
+  return `
+    ${weatherHTML ? `
+    <div style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px;
+                color:#555; margin-bottom:12px; padding-bottom:12px;
+                border-bottom:1px solid #f0f0ee;">
+      ${weatherHTML}
+    </div>` : ''}
+    <div class="stats-grid">
+      <div class="team-col away">
+        <div class="team-name">${g.away_team}</div>
+        ${awayHTML}
+      </div>
+      <div class="divider-col">
+        <div style="font-size:10px;color:#ccc;margin-top:22px;">vs</div>
+        ${centerHTML}
+      </div>
+      <div class="team-col home">
+        <div class="team-name">${g.home_team}</div>
+        ${homeHTML}
+      </div>
+    </div>
+    <div style="font-size:10px;color:#aaa;margin-top:12px;padding-top:8px;border-top:1px solid #f0f0ee;">
+      Stats = last 3 weeks · EPA = expected points added per play ·
+      Spread = favored team · Blitz % = proxy via pressure plays
+    </div>
+  `;
+}
+
+function renderGames(data) {
+  const container = document.getElementById('games');
+  container.innerHTML = '';
+
+  const COLS = window.innerWidth < 900 ? 2 : 4;
+
+  for (let i = 0; i < data.length; i += COLS) {
+    const rowGames = data.slice(i, i + COLS);
+
+    const row = document.createElement('div');
+    row.className = 'games-grid';
+    row.id = `row-${i}`;
+    rowGames.forEach((g, j) => {
+      const idx = i + j;
+      row.innerHTML += buildTile(g, idx);
+    });
+    container.appendChild(row);
+
+    rowGames.forEach((g, j) => {
+      const idx = i + j;
+      const panel = document.createElement('div');
+      panel.className = 'detail-panel';
+      panel.id = `detail-${idx}`;
+      panel.innerHTML = buildDetailPanel(g);
+      container.appendChild(panel);
+    });
+  }
+
+  window._nflData = data;
+}
+
+function toggleGame(idx) {
+  const panel = document.getElementById(`detail-${idx}`);
+  const tile = document.getElementById(`tile-${idx}`);
+  const isOpen = panel.classList.contains('open');
+
+  document.querySelectorAll('.detail-panel.open').forEach(p => p.classList.remove('open'));
+  document.querySelectorAll('.game-tile.active').forEach(t => t.classList.remove('active'));
+
+  if (!isOpen) {
+    panel.classList.add('open');
+    tile.classList.add('active');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
 
 async function loadWeeks() {
@@ -290,7 +350,7 @@ async function loadData() {
       return;
     }
 
-    container.innerHTML = data.map((g, i) => buildGameCard(g, i)).join('');
+    renderGames(data);
     status.textContent = `${data.length} game${data.length !== 1 ? 's' : ''} · ${season} Week ${week}`;
   } catch(e) {
     status.textContent = 'Error loading data';

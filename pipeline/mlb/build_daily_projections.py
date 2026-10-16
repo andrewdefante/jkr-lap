@@ -51,11 +51,13 @@ TEAM_ABBREVS = {
 }
 
 def get_schedule(target_date: str, include_final: bool = False) -> list:
-    """Fetch today's schedule with probable pitchers and lineups."""
+    """Fetch today's schedule with probable pitchers and lineups.
+    gameType covers Regular season plus all four postseason rounds
+    (there is no single "P" postseason code in the MLB Stats API)."""
     r = httpx.get('https://statsapi.mlb.com/api/v1/schedule', params={
         'sportId': 1,
         'date': target_date,
-        'gameType': 'R',
+        'gameType': 'R,F,D,L,W',
         'hydrate': 'probablePitcher,lineups,teams'
     }, timeout=20)
     r.raise_for_status()

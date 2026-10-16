@@ -158,7 +158,7 @@ def validate_pa_vs_api(db, lookback_days: int = 7) -> list:
         SELECT game_pk, game_date
         FROM mlb.games
         WHERE game_date >= :start AND game_date <= :today
-          AND game_type = 'R'
+          AND game_type IN ('R', 'F', 'D', 'L', 'W')
           AND status = 'Final'
         ORDER BY game_date
     """), {"start": start.strftime("%Y-%m-%d"), "today": today.strftime("%Y-%m-%d")}).mappings().all()

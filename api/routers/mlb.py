@@ -126,7 +126,7 @@ def live_games(db: Session = Depends(get_db)):
         for check_date in dates_to_check:
             res = httpx.get(
                 "https://statsapi.mlb.com/api/v1/schedule",
-                params={"sportId": 1, "date": check_date, "gameType": "R,S,E"},
+                params={"sportId": 1, "date": check_date, "gameType": "R,S,E,F,D,L,W"},
                 timeout=10
             )
             data = res.json()
@@ -655,7 +655,7 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
                 g.away_probable_pitcher_name AS away_name
             FROM mlb.games g
             WHERE g.game_date = :target_date
-              AND g.game_type = 'R'
+              AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
               AND (g.home_probable_pitcher_id IS NOT NULL
                    OR g.away_probable_pitcher_id IS NOT NULL)
         ),
@@ -686,7 +686,7 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             JOIN mlb.games g ON g.game_pk = bp.game_pk
             WHERE g.game_date::date BETWEEN (:target_date)::date - INTERVAL '60 days'
                                         AND (:target_date)::date - INTERVAL '1 day'
-              AND g.season = 2026 AND g.game_type = 'R'
+              AND g.season = 2026 AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
               AND bp.games_started = 1 AND bp.batters_faced > 0
         ),
         pitcher_ranked AS (
@@ -735,7 +735,7 @@ def pitcher_boxwhisker(date: str = None, db: Session = Depends(get_db)):
             JOIN pitcher_hand ph ON ph.pitcher_id = bp.player_id
             WHERE g.game_date::date BETWEEN (:target_date)::date - INTERVAL '60 days'
                                         AND (:target_date)::date - INTERVAL '1 day'
-              AND g.season = 2026 AND g.game_type = 'R'
+              AND g.season = 2026 AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
               AND bp.games_started = 1 AND bp.batters_faced > 0
         ),
         opp_game_vs_sp_raw AS (
@@ -1275,7 +1275,7 @@ def today_schedule(db: Session = Depends(get_db)):
                 params={
                     "sportId": 1,
                     "date": check_date,
-                    "gameType": "R,S,E",
+                    "gameType": "R,S,E,F,D,L,W",
                     "hydrate": "probablePitcher,team,linescore"
                 },
                 timeout=10

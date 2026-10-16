@@ -25,10 +25,12 @@ INFO = "   "
 
 
 def get_schedule_count(date_str: str, db) -> int:
-    """How many Final games does the MLB API say there were on this date."""
+    """How many Final games does the MLB API say there were on this date.
+    Must match the gameType set used by daily_pipeline.get_schedule_for_date
+    (R,S + all four postseason rounds) or this check reports false mismatches."""
     import httpx
     try:
-        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R,S&date={date_str}"
+        url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R,S,F,D,L,W&date={date_str}"
         res = httpx.get(url, timeout=15)
         data = res.json()
         total = 0

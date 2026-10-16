@@ -42,7 +42,7 @@ def get_yesterday_scores(yesterday: date, db) -> list:
                home_team_abbrev, away_team_abbrev,
                home_score, away_score, status
         FROM mlb.games
-        WHERE game_date = :d AND game_type = 'R'
+        WHERE game_date = :d AND game_type IN ('R', 'F', 'D', 'L', 'W')
           AND home_score IS NOT NULL AND away_score IS NOT NULL
           AND home_score IS DISTINCT FROM away_score
         ORDER BY game_pk
@@ -362,7 +362,7 @@ def get_pitcher_boxwhisker(db, today) -> list:
                 g.away_probable_pitcher_name AS away_name
             FROM mlb.games g
             WHERE g.game_date = :today
-              AND g.game_type = 'R'
+              AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
               AND (g.home_probable_pitcher_id IS NOT NULL
                    OR g.away_probable_pitcher_id IS NOT NULL)
         ),
@@ -395,7 +395,7 @@ def get_pitcher_boxwhisker(db, today) -> list:
             JOIN mlb.games g ON g.game_pk = bp.game_pk
             WHERE g.game_date::date BETWEEN (:today)::date - INTERVAL '60 days'
                                         AND (:today)::date - INTERVAL '1 day'
-              AND g.season = 2026 AND g.game_type = 'R'
+              AND g.season = 2026 AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
               AND bp.games_started = 1 AND bp.batters_faced > 0
         ),
         pitcher_ranked AS (
@@ -430,7 +430,7 @@ def get_pitcher_boxwhisker(db, today) -> list:
             JOIN pitcher_hand ph ON ph.pitcher_id = bp.player_id
             WHERE g.game_date::date BETWEEN (:today)::date - INTERVAL '60 days'
                                         AND (:today)::date - INTERVAL '1 day'
-              AND g.season = 2026 AND g.game_type = 'R'
+              AND g.season = 2026 AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
               AND bp.games_started = 1 AND bp.batters_faced > 0
         ),
         opp_game_vs_sp_raw AS (

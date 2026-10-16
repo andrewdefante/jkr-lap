@@ -45,7 +45,7 @@ def get_live_games(target_date: str = None) -> list:
         try:
             res = httpx.get(
                 MLB_SCHEDULE,
-                params={"sportId": 1, "date": d, "gameType": "R,S,E"},
+                params={"sportId": 1, "date": d, "gameType": "R,S,E,F,D,L,W"},
                 timeout=15
             )
             data = res.json()
@@ -82,7 +82,7 @@ def get_completed_games(target_date: str = None) -> list:
         try:
             res = httpx.get(
                 MLB_SCHEDULE,
-                params={"sportId": 1, "date": d, "gameType": "R,S,E"},
+                params={"sportId": 1, "date": d, "gameType": "R,S,E,F,D,L,W"},
                 timeout=15
             )
             data = res.json()

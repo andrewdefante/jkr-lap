@@ -68,7 +68,7 @@ def run_mlb_daily():
         inserted, skipped, errors = 0, 0, 0
         for game in games:
             action = fetch_game(game["game_pk"], db)
-            if action == "inserted":
+            if action in ("inserted", "updated"):
                 inserted += 1
             elif action == "skipped":
                 skipped += 1
@@ -110,9 +110,12 @@ def run_mlb_daily():
 
 
 def get_schedule_for_date(date_str: str) -> list:
-    """Fetch Final games for a specific date from MLB API."""
+    """Fetch Final games for a specific date from MLB API.
+    gameType=R,S,F,D,L,W covers Regular season, Spring Training, and all
+    four postseason rounds (Wild Card, Division, Championship, World Series —
+    there is no single "P" postseason code in the MLB Stats API)."""
     import httpx
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R,S&date={date_str}"
+    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&gameType=R,S,F,D,L,W&date={date_str}"
     try:
         res = httpx.get(url, timeout=15)
         data = res.json()
@@ -364,8 +367,14 @@ def run_fetch_kalshi():
 
 
 def run_update_statuses():
+    # Regular season + postseason in two calls — the MLB Stats API splits
+    # postseason across four gameType codes (F=Wild Card, D=Division Series,
+    # L=Championship Series, W=World Series; there is no single "P" code),
+    # but accepts a comma-joined list in one request.
     _run_script("Status Update", "/pipeline/mlb/fetch.py",
                 ["--season", "2026", "--game-type", "R", "--update-status"])
+    _run_script("Status Update (Postseason)", "/pipeline/mlb/fetch.py",
+                ["--season", "2026", "--game-type", "F,D,L,W", "--update-status"])
 
 
 def run_build_actuals():

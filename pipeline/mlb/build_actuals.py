@@ -51,7 +51,7 @@ def build_pitcher_actuals(game_date: date, db):
         FROM mlb.boxscore_pitching bp
         JOIN mlb.games g ON g.game_pk = bp.game_pk
             AND g.game_date = :game_date_str
-            AND g.game_type = 'R'
+            AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
             AND g.status IN ('Final','Game Over')
         -- Name lookup: one row per pitcher per game
         LEFT JOIN LATERAL (
@@ -108,7 +108,7 @@ def build_batter_actuals(game_date: date, db):
         FROM mlb.boxscore_batting bb
         JOIN mlb.games g ON g.game_pk = bb.game_pk
             AND g.game_date = :game_date_str
-            AND g.game_type = 'R'
+            AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
             AND g.status IN ('Final','Game Over')
         LEFT JOIN LATERAL (
             SELECT DISTINCT batter_name

@@ -17,6 +17,10 @@ Usage:
     # Spring training
     PYTHONPATH=/app python3 /pipeline/mlb/fetch.py --season 2026 --game-type S
 
+    # Postseason (Wild Card, Division, Championship, World Series — comma-joined,
+    # the MLB Stats API accepts multiple gameType codes in one call)
+    PYTHONPATH=/app python3 /pipeline/mlb/fetch.py --season 2026 --game-type F,D,L,W
+
     # Dry run - just count games, don't fetch
     PYTHONPATH=/app python3 /pipeline/mlb/fetch.py --season 2024 --dry-run
 """
@@ -41,7 +45,10 @@ GUMBO_BASE = "https://statsapi.mlb.com/api/v1.1"
 # S = Spring training
 # P = Playoffs
 # W = World Series
-GAME_TYPES = {"R": "Regular Season", "S": "Spring Training", "P": "Playoffs"}
+GAME_TYPES = {
+    "R": "Regular Season", "S": "Spring Training",
+    "F": "Wild Card", "D": "Division Series", "L": "Championship Series", "W": "World Series",
+}
 
 # team_id -> abbreviation, used only to populate home/away_team_abbrev when
 # update_statuses() creates a new mlb.games row from schedule data (which has
@@ -120,6 +127,7 @@ def get_full_schedule(season: int, game_type: str = "R") -> list[dict]:
             games.append({
                 "game_pk": game["gamePk"],
                 "game_date": date["date"],
+                "game_type": game.get("gameType"),
                 "game_time_utc": game.get("gameDate"),
                 "status": game.get("status", {}).get("detailedState"),
                 "away_team_id": away_team.get("id"),
@@ -197,7 +205,7 @@ def update_statuses(season: int, game_type: str = "R", db=None) -> dict:
         result = db.execute(upsert_sql, {
             "game_pk":    game["game_pk"],
             "game_date":  game["game_date"],
-            "game_type":  game_type,
+            "game_type":  game["game_type"],
             "season":     season,
             "status":     game["status"],
             "home_team_id":   game["home_team_id"],
@@ -323,8 +331,11 @@ def main():
     parser = argparse.ArgumentParser(description="Fetch MLB game data from GUMBO")
     parser.add_argument("--season", type=int, nargs="+", required=True,
                         help="Season year(s) e.g. --season 2022 2023 2024")
-    parser.add_argument("--game-type", default="R", choices=["R", "S", "P"],
-                        help="R=Regular, S=Spring Training, P=Playoffs (default: R)")
+    parser.add_argument("--game-type", default="R",
+                        help="MLB Stats API gameType code(s), comma-joined for multiple "
+                             "(e.g. 'F,D,L,W'). R=Regular, S=Spring Training, F=Wild Card, "
+                             "D=Division Series, L=Championship Series, W=World Series "
+                             "(default: R)")
     parser.add_argument("--transform", action="store_true",
                         help="Run transform after fetching")
     parser.add_argument("--delay", type=float, default=0.5,
@@ -339,7 +350,7 @@ def main():
         db = SessionLocal()
         try:
             for season in args.season:
-                print(f"\n=== {season} MLB {GAME_TYPES.get(args.game_type)} — Status Update ===")
+                print(f"\n=== {season} MLB {GAME_TYPES.get(args.game_type, args.game_type)} — Status Update ===")
                 update_statuses(season, args.game_type, db)
             print("\n=== Status update complete ===")
         finally:
@@ -355,7 +366,7 @@ def main():
     db = SessionLocal()
     try:
         for season in args.season:
-            print(f"\n=== {season} MLB {GAME_TYPES.get(args.game_type)} ===")
+            print(f"\n=== {season} MLB {GAME_TYPES.get(args.game_type, args.game_type)} ===")
             fetch_season(
                 season=season,
                 game_type=args.game_type,

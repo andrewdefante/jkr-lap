@@ -91,7 +91,7 @@ def upsert_game_projections(game_date: date, db) -> int:
            AND dp_home.opp_team_id = g.away_team_id
            AND dp_home.snapshot_date = :d
         WHERE g.game_date::date = :d
-          AND g.game_type = 'R'
+          AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
     """), {"d": game_date}).mappings().all()
 
     # Fall back to game_lineups for dates not yet in mlb.games (today's pre-game slate)
@@ -378,7 +378,7 @@ if __name__ == "__main__":
                     ON dp_away.game_pk = g.game_pk AND dp_away.opp_team_id = g.home_team_id
                 JOIN mlb.daily_projections dp_home
                     ON dp_home.game_pk = g.game_pk AND dp_home.opp_team_id = g.away_team_id
-                WHERE g.game_type = 'R'
+                WHERE g.game_type IN ('R', 'F', 'D', 'L', 'W')
                 ORDER BY d
             """)).scalars().all()
             total = 0

@@ -286,7 +286,7 @@ def fetch_today_weather(db):
         SELECT g.game_pk, g.game_date, g.home_team_id
         FROM mlb.games g
         WHERE g.game_date = :today
-        AND g.game_type = 'R'
+        AND g.game_type IN ('R', 'F', 'D', 'L', 'W')
         AND NOT EXISTS (
             SELECT 1 FROM mlb.game_weather gw WHERE gw.game_pk = g.game_pk
         )

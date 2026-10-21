@@ -154,28 +154,20 @@ def explore_race(
 
 
 @router.get("/races")
-def list_races(
-    year: int = Query(default=None),
-    series_id: int = Query(default=None),
-    db: Session = Depends(get_db)
-):
-    """List all stored NASCAR races."""
-    q = db.query(NASCARRawEvent).filter(NASCARRawEvent.endpoint_type == "weekend_feed")
-    if year:
-        q = q.filter(NASCARRawEvent.season == year)
-    if series_id:
-        q = q.filter(NASCARRawEvent.series_id == series_id)
-
-    rows = q.order_by(NASCARRawEvent.season.desc(), NASCARRawEvent.race_id).all()
-    return [
-        {
-            "race_id": r.race_id,
-            "series": SERIES_NAMES.get(r.series_id),
-            "season": r.season,
-            "fetched_at": r.fetched_at,
-        }
-        for r in rows
-    ]
+def list_races(db: Session = Depends(get_db)):
+    """List the most recent races that have results data, for the leaderboard
+    race picker. nascar.races also holds future-scheduled races (pre-loaded
+    from the season schedule before they're run) — those are excluded here
+    since they have no leaderboard to show yet."""
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT race_id, race_name, track_name, race_date, actual_laps, season
+        FROM nascar.races r
+        WHERE EXISTS (SELECT 1 FROM nascar.results res WHERE res.race_id = r.race_id)
+        ORDER BY race_date DESC
+        LIMIT 30
+    """)).mappings().all()
+    return [dict(r) for r in rows]
 
 @router.get("/track-profile/{track_name}")
 def track_profile(
@@ -593,3 +585,161 @@ def live_projections(race_id: int, db: Session = Depends(get_db)):
         print(f"ERROR in live_projections: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/leaderboard/{race_id}")
+def get_leaderboard(race_id: int, lap: int = None, db: Session = Depends(get_db)):
+    """
+    Returns leaderboard for a race at a given lap number.
+    If lap is None, returns final standings.
+
+    Note: nascar.pit_stops.driver_id is never populated by the current
+    pipeline (always NULL), so pit data is joined on car_number instead —
+    safe within a single race, since each car number is unique on track.
+    """
+    from sqlalchemy import text
+
+    race = db.execute(text("""
+        SELECT race_id, race_name, track_name, race_date, actual_laps, season
+        FROM nascar.races WHERE race_id = :rid
+    """), {"rid": race_id}).mappings().first()
+
+    if not race:
+        return {"error": "Race not found"}
+
+    max_lap = db.execute(text("""
+        SELECT MAX(lap_number) FROM nascar.laps WHERE race_id = :rid
+    """), {"rid": race_id}).scalar() or 0
+
+    target_lap = lap if lap else max_lap
+
+    leaderboard = db.execute(text("""
+        WITH lap_snapshot AS (
+            SELECT DISTINCT ON (driver_id)
+                driver_id, driver_name, car_number,
+                lap_number, position, lap_time, lap_speed, is_caution
+            FROM nascar.laps
+            WHERE race_id = :rid AND lap_number <= :lap
+            ORDER BY driver_id, lap_number DESC
+        ),
+        last_pit AS (
+            SELECT car_number,
+                   MAX(lap) as last_pit_lap,
+                   COUNT(CASE WHEN stop_number > 0 THEN 1 END) as pit_count
+            FROM nascar.pit_stops
+            WHERE race_id = :rid AND lap <= :lap
+            GROUP BY car_number
+        ),
+        results AS (
+            SELECT driver_id, manufacturer, team_name,
+                   start_position, finish_position, laps_led,
+                   avg_speed, fastest_lap_speed, dnf, finishing_status,
+                   points, pit_stop_count
+            FROM nascar.results
+            WHERE race_id = :rid
+        )
+        SELECT
+            ls.position,
+            ls.driver_id,
+            ls.driver_name,
+            ls.car_number,
+            r.manufacturer,
+            r.team_name,
+            r.laps_led,
+            ls.lap_number AS current_lap,
+            ls.lap_time,
+            ls.lap_speed,
+            ls.is_caution,
+            r.avg_speed,
+            r.fastest_lap_speed,
+            r.dnf,
+            r.finishing_status,
+            r.points,
+            COALESCE(lp.last_pit_lap, 0) AS last_pit_lap,
+            COALESCE(lp.pit_count, r.pit_stop_count, 0) AS pit_count
+        FROM lap_snapshot ls
+        LEFT JOIN results r ON r.driver_id = ls.driver_id
+        LEFT JOIN last_pit lp ON lp.car_number = ls.car_number
+        ORDER BY ls.position ASC NULLS LAST
+    """), {"rid": race_id, "lap": target_lap}).mappings().all()
+
+    # Calculate gap to car ahead/behind. For cars sharing a lap, fall back
+    # to a lap-time differential — an approximation (not a true track gap,
+    # since it compares each car's own most recent lap rather than a
+    # synchronized clock), but it's the closest signal this schema has
+    # without a cumulative race-time column.
+    rows = [dict(r) for r in leaderboard]
+    for i, row in enumerate(rows):
+        row['gap_ahead'] = None
+        row['gap_behind'] = None
+        if i > 0 and rows[i-1].get('current_lap') and row.get('current_lap'):
+            lap_diff = rows[i-1]['current_lap'] - row['current_lap']
+            if lap_diff > 0:
+                row['gap_ahead'] = f"{lap_diff}L"
+            elif rows[i-1].get('lap_time') and row.get('lap_time'):
+                row['gap_ahead'] = f"+{abs(float(row['lap_time']) - float(rows[i-1]['lap_time'])):.3f}s"
+        if i < len(rows) - 1:
+            next_row = rows[i+1]
+            lap_diff = row.get('current_lap', 0) - next_row.get('current_lap', 0)
+            if lap_diff > 0:
+                row['gap_behind'] = f"{lap_diff}L"
+
+    return {
+        "race": dict(race),
+        "target_lap": target_lap,
+        "max_lap": max_lap,
+        "drivers": rows
+    }
+
+
+@router.get("/driver/{race_id}/{driver_id}")
+def get_driver_detail(race_id: int, driver_id: int, db: Session = Depends(get_db)):
+    """Returns expanded lap/pit detail for a driver in a race."""
+    from sqlalchemy import text
+
+    laps = db.execute(text("""
+        SELECT lap_number, position, lap_time, lap_speed, is_caution
+        FROM nascar.laps
+        WHERE race_id = :rid AND driver_id = :did
+        ORDER BY lap_number ASC
+    """), {"rid": race_id, "did": driver_id}).mappings().all()
+
+    laps_list = [dict(r) for r in laps]
+    last5 = laps_list[-5:] if len(laps_list) >= 5 else laps_list
+
+    top5 = sorted(
+        [l for l in laps_list if l.get('lap_time') and float(l['lap_time']) > 0],
+        key=lambda x: float(x['lap_time'])
+    )[:5]
+
+    # pit_stops.driver_id is never populated (see get_leaderboard note above),
+    # so resolve this driver's car_number for this race and join on that instead.
+    car_number = db.execute(text("""
+        SELECT car_number FROM nascar.results
+        WHERE race_id = :rid AND driver_id = :did
+    """), {"rid": race_id, "did": driver_id}).scalar()
+
+    pit_rows = []
+    if car_number:
+        pit_rows = db.execute(text("""
+            SELECT lap, pit_in_lap, pit_out_lap, duration_seconds
+            FROM nascar.pit_stops
+            WHERE race_id = :rid AND car_number = :car
+            AND stop_number > 0
+            ORDER BY lap ASC
+        """), {"rid": race_id, "car": car_number}).mappings().all()
+
+    # stop_number in nascar.pit_stops is a race-wide sequence (the Nth pit
+    # stop of the whole race), not per-driver — re-numbering sequentially
+    # here so a driver's own stops read as "Stop 1, 2, 3..." in order.
+    pits = [
+        {"stop_number": i, **dict(p)}
+        for i, p in enumerate(pit_rows, start=1)
+    ]
+
+    return {
+        "last5_laps": last5,
+        "top5_laps": top5,
+        "pit_stops": pits,
+        "total_laps": len(laps_list)
+    }

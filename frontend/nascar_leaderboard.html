@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>NASCAR Leaderboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif;
+           background: #f5f5f3; color: #1a1a1a; padding: 1rem; }
+
+    .header { display: flex; align-items: center; gap: 12px;
+              margin-bottom: 1rem; flex-wrap: wrap; }
+    .header h1 { font-size: 16px; font-weight: 500; }
+    .header a { font-size: 13px; color: #555; text-decoration: none; }
+
+    /* Filter bar */
+    .filters { background: white; border: 1px solid #e8e8e6; border-radius: 8px;
+               padding: 12px 16px; margin-bottom: 12px;
+               display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .filters input[type=text] { font-size: 13px; border: 1px solid #ddd;
+                                 padding: 5px 10px; border-radius: 4px; width: 180px; }
+    .mfr-btn { font-size: 12px; padding: 4px 10px; border: 1px solid #ddd;
+               border-radius: 4px; background: white; cursor: pointer;
+               font-weight: 500; }
+    .mfr-btn.active.chevrolet { background: #FFD700; border-color: #b8960c; color: #1a1a1a; }
+    .mfr-btn.active.ford { background: #003087; border-color: #001a4d; color: white; }
+    .mfr-btn.active.toyota { background: #CC0000; border-color: #8b0000; color: white; }
+    .mfr-btn.active.all { background: #1a1a1a; border-color: #000; color: white; }
+
+    /* Lap slider */
+    .slider-wrap { display: flex; align-items: center; gap: 8px;
+                   font-size: 12px; color: #555; }
+    .slider-wrap input[type=range] { width: 160px; }
+
+    /* Race selector */
+    select { font-size: 13px; border: 1px solid #ddd; padding: 5px 8px;
+             border-radius: 4px; background: white; max-width: 300px; }
+
+    /* Race info bar */
+    .race-info { font-size: 12px; color: #666; margin-bottom: 10px;
+                 display: flex; gap: 16px; flex-wrap: wrap; }
+
+    /* Leaderboard table */
+    .leaderboard { background: white; border: 1px solid #e8e8e6;
+                   border-radius: 8px; overflow: hidden; }
+
+    .lb-header { display: grid;
+                 grid-template-columns: 40px 40px 1fr 80px 70px 70px 70px 70px;
+                 padding: 8px 12px; background: #fafaf8;
+                 border-bottom: 1px solid #e8e8e6;
+                 font-size: 10px; font-weight: 600; color: #888;
+                 text-transform: uppercase; letter-spacing: .05em; }
+
+    .driver-row { display: grid;
+                  grid-template-columns: 40px 40px 1fr 80px 70px 70px 70px 70px;
+                  padding: 8px 12px; border-bottom: 0.5px solid #f0f0ee;
+                  cursor: pointer; transition: background 0.1s;
+                  align-items: center; }
+    .driver-row:hover { background: #fafaf8; }
+    .driver-row.active { background: #f0f4fa; border-left: 3px solid #1a1a1a; }
+    .driver-row.filtered-out { display: none; }
+
+    .pos { font-size: 14px; font-weight: 700; color: #1a1a1a; text-align: center; }
+    .pos.p1 { color: #b8960c; }
+    .pos.p2 { color: #888; }
+    .pos.p3 { color: #b87333; }
+
+    .car-num { font-size: 12px; font-weight: 700; text-align: center;
+               padding: 2px 5px; border-radius: 3px; background: #f0f0ee; }
+    .car-num.chevrolet { background: #fff9d6; color: #b8960c; }
+    .car-num.ford { background: #e8edf5; color: #003087; }
+    .car-num.toyota { background: #fdeaea; color: #cc0000; }
+
+    .driver-name { font-size: 13px; font-weight: 500; }
+    .driver-team { font-size: 11px; color: #888; margin-top: 1px; }
+
+    .cell { font-size: 12px; color: #333; text-align: right; }
+    .cell.fast { color: #2d7a2d; font-weight: 500; }
+    .cell.slow { color: #cc2200; }
+    .cell.muted { color: #aaa; }
+
+    /* Expanded detail */
+    .detail-panel { display: none; background: #f9f9f8; padding: 14px 16px;
+                    border-bottom: 0.5px solid #e8e8e6; }
+    .detail-panel.open { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+    .detail-section h4 { font-size: 10px; font-weight: 600; color: #888;
+                         text-transform: uppercase; letter-spacing: .05em;
+                         margin-bottom: 8px; }
+    .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .detail-table th { color: #888; font-weight: 500; text-align: right;
+                       padding: 2px 6px 4px 0; font-size: 10px;
+                       text-transform: uppercase; }
+    .detail-table th:first-child { text-align: left; }
+    .detail-table td { padding: 3px 6px 3px 0; text-align: right;
+                       border-bottom: 0.5px solid #f0f0ee; }
+    .detail-table td:first-child { text-align: left; }
+    .detail-table tr:last-child td { border-bottom: none; }
+    .fastest-lap { color: #7B2FBE; font-weight: 600; }
+
+    @media (max-width: 700px) {
+      .lb-header, .driver-row {
+        grid-template-columns: 36px 36px 1fr 60px 60px;
+      }
+      .lb-header > *:nth-child(6),
+      .lb-header > *:nth-child(7),
+      .lb-header > *:nth-child(8),
+      .driver-row > *:nth-child(6),
+      .driver-row > *:nth-child(7),
+      .driver-row > *:nth-child(8) { display: none; }
+      .detail-panel.open { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <a href="/mlb-dashboard">← Dashboard</a>
+  <h1>NASCAR Leaderboard</h1>
+  <span id="status" style="font-size:12px;color:#888;"></span>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+  <select id="race-select" onchange="loadRace()">
+    <option value="">Loading races...</option>
+  </select>
+
+  <input type="text" id="search" placeholder="Search driver..." oninput="applyFilters()">
+
+  <div style="display:flex;gap:6px;">
+    <button class="mfr-btn active all" data-mfr="all" onclick="setMfr('all')">All</button>
+    <button class="mfr-btn chevrolet" data-mfr="chevrolet" onclick="setMfr('chevrolet')">Chevy</button>
+    <button class="mfr-btn ford" data-mfr="ford" onclick="setMfr('ford')">Ford</button>
+    <button class="mfr-btn toyota" data-mfr="toyota" onclick="setMfr('toyota')">Toyota</button>
+  </div>
+
+  <div class="slider-wrap">
+    <span>Lap:</span>
+    <input type="range" id="lap-slider" min="1" max="500" value="500"
+           oninput="updateLapLabel()" onchange="loadLeaderboard()">
+    <span id="lap-label" style="min-width:60px;">Final</span>
+  </div>
+</div>
+
+<!-- Race info -->
+<div class="race-info" id="race-info"></div>
+
+<!-- Leaderboard -->
+<div class="leaderboard">
+  <div class="lb-header">
+    <div style="text-align:center">Pos</div>
+    <div style="text-align:center">#</div>
+    <div>Driver</div>
+    <div style="text-align:right">Lap Time</div>
+    <div style="text-align:right">Gap ↑</div>
+    <div style="text-align:right">Gap ↓</div>
+    <div style="text-align:right">Last Pit</div>
+    <div style="text-align:right">Laps Led</div>
+  </div>
+  <div id="leaderboard-rows"></div>
+</div>
+
+<script>
+const API = '';
+let currentRaceId = null;
+let currentMfr = 'all';
+let maxLap = 500;
+let allDriverData = {};
+
+// --- Races ---
+async function loadRaces() {
+  const res = await fetch(`${API}/nascar/races`);
+  const races = await res.json();
+  const sel = document.getElementById('race-select');
+  sel.innerHTML = races.map(r =>
+    `<option value="${r.race_id}">${r.race_date} — ${r.race_name} @ ${r.track_name}</option>`
+  ).join('');
+  if (races.length) loadRace();
+}
+
+async function loadRace() {
+  const raceId = document.getElementById('race-select').value;
+  if (!raceId) return;
+  currentRaceId = raceId;
+  allDriverData = {};
+
+  // Reset slider
+  document.getElementById('lap-slider').value = document.getElementById('lap-slider').max;
+  document.getElementById('lap-label').textContent = 'Final';
+  loadLeaderboard();
+}
+
+// --- Leaderboard ---
+async function loadLeaderboard() {
+  if (!currentRaceId) return;
+  const slider = document.getElementById('lap-slider');
+  const isAtMax = parseInt(slider.value) >= parseInt(slider.max);
+  const lapParam = isAtMax ? '' : `&lap=${slider.value}`;
+
+  document.getElementById('status').textContent = 'Loading...';
+  const res = await fetch(`${API}/nascar/leaderboard/${currentRaceId}?${lapParam}`);
+  const data = await res.json();
+
+  if (data.error) {
+    document.getElementById('status').textContent = data.error;
+    return;
+  }
+
+  // Update slider max
+  maxLap = data.max_lap || 500;
+  slider.max = maxLap;
+  if (isAtMax) {
+    slider.value = maxLap;
+    document.getElementById('lap-label').textContent = `Final (${maxLap})`;
+  }
+
+  // Race info
+  document.getElementById('race-info').innerHTML = `
+    <span>🏁 ${data.race.race_name}</span>
+    <span>📍 ${data.race.track_name}</span>
+    <span>📅 ${data.race.race_date}</span>
+    <span>Laps: ${data.target_lap} / ${data.max_lap}</span>
+  `;
+
+  renderLeaderboard(data.drivers);
+  document.getElementById('status').textContent =
+    `${data.drivers.length} drivers · Lap ${data.target_lap}`;
+}
+
+function mfrClass(m) {
+  if (!m) return '';
+  const ml = m.toLowerCase();
+  if (ml.includes('chev')) return 'chevrolet';
+  if (ml.includes('ford')) return 'ford';
+  if (ml.includes('toy')) return 'toyota';
+  return '';
+}
+
+function posClass(p) {
+  if (p === 1) return 'p1';
+  if (p === 2) return 'p2';
+  if (p === 3) return 'p3';
+  return '';
+}
+
+function renderLeaderboard(drivers) {
+  const container = document.getElementById('leaderboard-rows');
+  container.innerHTML = '';
+
+  drivers.forEach((d, i) => {
+    const mc = mfrClass(d.manufacturer);
+    const driverId = d.driver_id;
+
+    const row = document.createElement('div');
+    row.className = `driver-row`;
+    row.id = `row-${driverId}`;
+    row.dataset.name = (d.driver_name || '').toLowerCase();
+    row.dataset.mfr = mc;
+    row.innerHTML = `
+      <div class="pos ${posClass(d.position)}">${d.position ?? '—'}</div>
+      <div class="car-num ${mc}">${d.car_number || '—'}</div>
+      <div>
+        <div class="driver-name">${d.driver_name || '—'}</div>
+        <div class="driver-team">${d.team_name || ''} · ${d.manufacturer || ''}</div>
+      </div>
+      <div class="cell">${d.lap_time ? Number(d.lap_time).toFixed(3) + 's' : '—'}</div>
+      <div class="cell muted">${d.gap_ahead || '—'}</div>
+      <div class="cell muted">${d.gap_behind || '—'}</div>
+      <div class="cell">${d.last_pit_lap > 0 ? 'L' + d.last_pit_lap : '—'}</div>
+      <div class="cell">${d.laps_led > 0 ? d.laps_led : '—'}</div>
+    `;
+    row.addEventListener('click', () => toggleDetail(driverId));
+
+    const detail = document.createElement('div');
+    detail.className = 'detail-panel';
+    detail.id = `detail-${driverId}`;
+    detail.innerHTML = `<div style="color:#aaa;font-size:12px;">Loading...</div>`;
+
+    container.appendChild(row);
+    container.appendChild(detail);
+  });
+
+  applyFilters();
+}
+
+// --- Driver detail ---
+async function toggleDetail(driverId) {
+  const panel = document.getElementById(`detail-${driverId}`);
+  const row = document.getElementById(`row-${driverId}`);
+  const isOpen = panel.classList.contains('open');
+
+  // Close all
+  document.querySelectorAll('.detail-panel.open').forEach(p => p.classList.remove('open'));
+  document.querySelectorAll('.driver-row.active').forEach(r => r.classList.remove('active'));
+
+  if (!isOpen) {
+    panel.classList.add('open');
+    row.classList.add('active');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Load if not cached
+    if (!allDriverData[driverId]) {
+      const res = await fetch(`${API}/nascar/driver/${currentRaceId}/${driverId}`);
+      allDriverData[driverId] = await res.json();
+    }
+    renderDriverDetail(driverId, panel);
+  }
+}
+
+function renderDriverDetail(driverId, panel) {
+  const d = allDriverData[driverId];
+  if (!d) return;
+
+  // Pit stops
+  const pitRows = d.pit_stops.length
+    ? d.pit_stops.map(p => `
+        <tr>
+          <td>Stop ${p.stop_number}</td>
+          <td>${p.pit_in_lap || p.lap || '—'}</td>
+          <td>${p.pit_out_lap || '—'}</td>
+          <td>${p.duration_seconds > 0 ? p.duration_seconds.toFixed(1) + 's' : '—'}</td>
+        </tr>`).join('')
+    : `<tr><td colspan="4" style="color:#aaa">No pit data available</td></tr>`;
+
+  // Last 5 laps
+  const last5Rows = d.last5_laps.map(l => `
+    <tr>
+      <td>Lap ${l.lap_number}</td>
+      <td>${l.position || '—'}</td>
+      <td class="${l.is_caution ? 'muted' : ''}">${Number(l.lap_time).toFixed(3)}s</td>
+      <td>${l.lap_speed ? Number(l.lap_speed).toFixed(1) : '—'}</td>
+    </tr>`).join('');
+
+  // Top 5 fastest
+  const top5Rows = d.top5_laps.map((l, i) => `
+    <tr>
+      <td class="${i === 0 ? 'fastest-lap' : ''}">Lap ${l.lap_number}</td>
+      <td>${l.position || '—'}</td>
+      <td class="${i === 0 ? 'fastest-lap' : ''}">${Number(l.lap_time).toFixed(3)}s</td>
+      <td>${l.lap_speed ? Number(l.lap_speed).toFixed(1) : '—'}</td>
+    </tr>`).join('');
+
+  panel.innerHTML = `
+    <div class="detail-section">
+      <h4>Pit Stops (${d.pit_stops.length})</h4>
+      <table class="detail-table">
+        <tr><th>Stop</th><th>In</th><th>Out</th><th>Duration</th></tr>
+        ${pitRows}
+      </table>
+    </div>
+    <div class="detail-section">
+      <h4>Last 5 Laps</h4>
+      <table class="detail-table">
+        <tr><th>Lap</th><th>Pos</th><th>Time</th><th>Speed</th></tr>
+        ${last5Rows}
+      </table>
+    </div>
+    <div class="detail-section">
+      <h4>Top 5 Fastest Laps <span style="color:#7B2FBE">●</span></h4>
+      <table class="detail-table">
+        <tr><th>Lap</th><th>Pos</th><th>Time</th><th>Speed</th></tr>
+        ${top5Rows}
+      </table>
+    </div>
+  `;
+}
+
+// --- Filters ---
+function setMfr(mfr) {
+  currentMfr = mfr;
+  document.querySelectorAll('.mfr-btn').forEach(b => {
+    b.classList.remove('active');
+    if (b.dataset.mfr === mfr) b.classList.add('active');
+  });
+  applyFilters();
+}
+
+function applyFilters() {
+  const search = document.getElementById('search').value.toLowerCase();
+  document.querySelectorAll('.driver-row').forEach(row => {
+    const nameMatch = !search || row.dataset.name.includes(search);
+    const mfrMatch = currentMfr === 'all' || row.dataset.mfr === currentMfr;
+    const show = nameMatch && mfrMatch;
+    row.classList.toggle('filtered-out', !show);
+    // Also hide/show detail panel
+    const driverId = row.id.replace('row-', '');
+    const detail = document.getElementById(`detail-${driverId}`);
+    if (detail) detail.style.display = show ? '' : 'none';
+  });
+}
+
+function updateLapLabel() {
+  const val = parseInt(document.getElementById('lap-slider').value);
+  const isMax = val >= maxLap;
+  document.getElementById('lap-label').textContent = isMax ? `Final (${maxLap})` : `Lap ${val}`;
+}
+
+// Init
+loadRaces();
+</script>
+</body>
+</html>

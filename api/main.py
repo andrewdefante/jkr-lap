@@ -71,3 +71,7 @@ async def pitcher_projections():
 @app.get("/nfl-matchups", include_in_schema=False)
 async def nfl_matchups_page():
     return FileResponse("/frontend/nfl_matchups.html")
+
+@app.get("/nascar-leaderboard", include_in_schema=False)
+async def nascar_leaderboard_page():
+    return FileResponse("/frontend/nascar_leaderboard.html")
